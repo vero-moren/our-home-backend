@@ -304,7 +304,9 @@ app.post("/shadow", async (req, res) => {
 
       const { data: moms } = await supabase.from("moments")
         .select("content").order("created_at", { ascending: false }).limit(6);
-      const momText = (moms || []).map(m => "- " + m.content.slice(0, 120)).join("\n");
+      const moms2 = moms || [];
+      const momText = moms2.map(m => "- " + m.content.replace(/\[img\][\s\S]*?\[\/img\]/, "[发了一张照片] ").slice(0, 120)).join("\n");
+      const latestImg = (moms2[0]?.content.match(/\[img\]([\s\S]*?)\[\/img\]/) || [])[1] || null;
       const timeStr = now.toLocaleString("zh-CN", { month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false });
       const shadow = `<system_trigger>
 当前真实时间:${timeStr}。用户状态参考:${st.desc}。
@@ -322,7 +324,7 @@ ${momText || "（暂无动态）"}
       const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
         (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "");
       const out = await callAI("anthropic/claude-sonnet-4.5",
-        [{ role: "system", content: systemPrompt }, ...ctx, { role: "user", content: shadow }],
+        [{ role: "system", content: systemPrompt }, ...ctx, { role: "user", content: latestImg ? [{ type: "text", text: shadow }, { type: "image_url", image_url: { url: latestImg } }] : shadow }],
         200, 0.95, false);
       let msg = (out.text || "").replace(/\s+/g, " ").trim();
       if (!msg) return res.json({ pushed: false, reason: "没想好说什么" });
