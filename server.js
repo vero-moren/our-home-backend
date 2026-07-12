@@ -302,9 +302,14 @@ app.post("/shadow", async (req, res) => {
         role: m.sender === "琰琰" ? "user" : "assistant", content: m.content
       }));
 
+      const { data: moms } = await supabase.from("moments")
+        .select("content").order("created_at", { ascending: false }).limit(6);
+      const momText = (moms || []).map(m => "- " + m.content.slice(0, 120)).join("\n");
       const timeStr = now.toLocaleString("zh-CN", { month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false });
       const shadow = `<system_trigger>
 当前真实时间:${timeStr}。用户状态参考:${st.desc}。
+[她最近的动态·只当氛围参考]
+${momText || "（暂无动态）"}
 [行动指令]
 这是一次主动推送:不是回复,是你自己想她了,浮上来说一句。
 优先读最近对话的氛围,可以结合共同记忆,但不要硬凑剧情。
