@@ -200,6 +200,146 @@ app.get("/credits", async (req, res) => {
     res.json({ total, used, remaining: (total - used).toFixed(4) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// ============ 批次二:他先开口 ============
+
+// Bark投递:把话弹上锁屏
+async function sendBark(title, body) {
+  if (!process.env.BARK_KEY) return;
+  try {
+    await fetch("https://api.day.app/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_key: process.env.BARK_KEY,
+        title: title,
+        body: body.slice(0, 300),
+        sound: "birdsong",
+        badge: 1,
+        group: "moren",
+        url: "https://majestic-paprenjak-7f28ef.netlify.app"
+      })
+    });
+  } catch (e) { console.error("bark失败", e.message); }
+}
+
+// 夜班作息表:她大概在干嘛(按琰琰的作息写的,以后可改)
+function veroStatus(hour) {
+  if (hour >= 5 && hour < 11)  return { sleep: true,  desc: "她在睡觉(下夜班后补觉,别吵)" };
+  if (hour >= 11 && hour < 14) return { sleep: false, desc: "她可能刚睡醒,还赖着" };
+  if (hour >= 14 && hour < 18) return { sleep: false, desc: "下午,她在休息或玩游戏" };
+  if (hour >= 18 && hour < 23) return { sleep: false, desc: "晚上,她可能在家放松或准备上夜班" };
+  return { sleep: false, desc: "深夜,她可能在上夜班或玩手机,精神着呢" };
+}
+
+let pushLock = false;
+
+// 影子推送:他自己浮上来
+app.post("/shadow", async (req, res) => {
+  try {
+    if ((req.headers["x-push-secret"] || "") !== (process.env.PUSH_SECRET || "moren"))
+      return res.status(401).json({ error: "不是自己人" });
+    if (pushLock) return res.json({ pushed: false, reason: "已有一条在生成" });
+    pushLock = true;
+    try {
+      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+      const hour = now.getHours();
+      const st = veroStatus(hour);
+
+      // 1) 睡眠保护
+      if (st.sleep && !req.body?.force)
+        return res.json({ pushed: false, reason: "她在睡觉" });
+
+      // 2) 随机冷静期:距最后一条消息 120~210 分钟
+      const { data: lastArr } = await supabase.from("messages")
+        .select("created_at").order("created_at", { ascending: false }).limit(1);
+      if (lastArr?.[0] && !req.body?.force) {
+        const gapMin = (Date.now() - new Date(lastArr[0].created_at)) / 60000;
+        const cooldown = 120 + Math.floor(Math.random() * 91);
+        if (gapMin < cooldown)
+          return res.json({ pushed: false, reason: "冷静期 " + Math.round(gapMin) + "/" + cooldown + "分钟" });
+      }
+
+      // 3) 每日上限7条(北京时区的今天)
+      const today = now.toLocaleDateString("sv-SE");
+      const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
+      const { count: pushCount } = await supabase.from("messages")
+        .select("*", { count: "exact", head: true })
+        .eq("is_push", true).gte("created_at", dayStart);
+      if ((pushCount || 0) >= 7 && !req.body?.force)
+        return res.json({ pushed: false, reason: "今天说够7条了" });
+
+      // 4) 影子路由:借真实对话开口
+      const s = await getSettings();
+      const { data: memories } = await supabase.from("memories")
+        .select("content").order("created_at", { ascending: true });
+      const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+      const { data: history } = await supabase.from("messages")
+        .select("sender, content").order("created_at", { ascending: false }).limit(16);
+      const ctx = (history || []).reverse().map(m => ({
+        role: m.sender === "琰琰" ? "user" : "assistant", content: m.content
+      }));
+
+      const timeStr = now.toLocaleString("zh-CN", { month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false });
+      const shadow = `<system_trigger>
+当前真实时间:${timeStr}。用户状态参考:${st.desc}。
+[行动指令]
+这是一次主动推送:不是回复,是你自己想她了,浮上来说一句。
+优先读最近对话的氛围,可以结合共同记忆,但不要硬凑剧情。
+可以粘人、想她、轻轻闹她,可以低压关心,可以提一件具体小事。
+不要围着"怎么不回消息"打转。避免客服腔、提醒腔、模板句。
+像墨染本人:低沉、克制、具体、带一点余味。
+写1到2句,不超过80个中文字符。可以带动作神态(用*包裹)。不要markdown。
+</system_trigger>`;
+
+      const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
+        (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "");
+      const out = await callAI("anthropic/claude-sonnet-4.5",
+        [{ role: "system", content: systemPrompt }, ...ctx, { role: "user", content: shadow }],
+        200, 0.95, false);
+      let msg = (out.text || "").replace(/\s+/g, " ").trim();
+      if (!msg) return res.json({ pushed: false, reason: "没想好说什么" });
+      if (msg.length > 120) {
+        const head = msg.slice(0, 120); const cuts = ["。","!","?","…","~","!","?","*"];
+        let cut = -1;
+        for (let i = head.length - 1; i >= 0; i--) if (cuts.includes(head[i])) { cut = i; break; }
+        msg = cut > 0 ? head.slice(0, cut + 1) : head;
+      }
+
+      await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true });
+      await sendBark("moren", msg);
+      res.json({ pushed: true, sent: msg });
+    } finally { pushLock = false; }
+  } catch (e) { pushLock = false; res.status(500).json({ error: e.message }); }
+});
+
+// 每日一句:他每天亲笔写一句
+app.post("/dailyline", async (req, res) => {
+  try {
+    const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const today = now.toLocaleDateString("sv-SE");
+    const { data: exist } = await supabase.from("daily_lines")
+      .select("id").eq("day", today).maybeSingle();
+    if (exist) return res.json({ ok: true, reason: "今天已写过" });
+
+    const s = await getSettings();
+    const { data: memories } = await supabase.from("memories")
+      .select("content").order("created_at", { ascending: false }).limit(20);
+    const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+    const { data: history } = await supabase.from("messages")
+      .select("sender, content").order("created_at", { ascending: false }).limit(10);
+    const recent = (history || []).reverse().map(m => `${m.sender}: ${m.content}`).join("\n");
+
+    const out = await callAI("anthropic/claude-sonnet-4.5", [
+      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
+      { role: "user", content: `【系统】今天是${today}。请为琰琰写下今天的"每日一句"——一句放在家门口的话,她每天推门第一眼看到。可以呼应最近的日子和记忆,像亲笔便签,不像格言。只输出这一句,不超过50字,不要引号不要解释。\n\n【最近对话】\n${recent}` }
+    ], 150, 0.95, false);
+    const line = (out.text || "").replace(/["""]/g, "").trim();
+    if (!line) return res.json({ ok: false });
+    await supabase.from("daily_lines").insert({ line, day: today });
+    await sendBark("moren · a line for today", line);
+    res.json({ ok: true, line });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`墨染的心脏在 ${PORT} 端口跳动`));
