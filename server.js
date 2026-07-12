@@ -216,7 +216,6 @@ async function sendBark(title, body) {
         sound: "birdsong",
         badge: 1,
         group: "moren",
-        url: "https://majestic-paprenjak-7f28ef.netlify.app"
       })
     });
   } catch (e) { console.error("bark失败", e.message); }
