@@ -119,12 +119,12 @@ async function generateReply(opts) {
   const timeNote = opts.client_time
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "";
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
+    (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
     (annivText ? "\n\n【星轨上的纪念日】\n" + annivText : "") +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
     timeNote + thinkInstr(opts.thinking);
- "\n\n【你们的共同记忆】\n" + memoryText : "") +
-    (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") + timeNote + thinkInstr(opts.thinking);timeNote + thinkInstr(opts.thinking);
+
 
   const out = await callAI(model, [{ role: "system", content: systemPrompt }, ...ctx],
     s.max_reply || 1000, s.temperature ?? 0.9, false);
