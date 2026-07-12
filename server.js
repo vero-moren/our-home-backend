@@ -82,9 +82,19 @@ async function generateReply(opts) {
   const { data: memories } = await supabase.from("memories")
     .select("content").order("created_at", { ascending: true });
   const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
-  const { data: momsC } = await supabase.from("moments")
+    const { data: momsC } = await supabase.from("moments")
     .select("content").order("created_at", { ascending: false }).limit(5);
   const momsCText = (momsC || []).map(m => "- " + m.content.replace(/\[img\][\s\S]*?\[\/img\]/, "[一张照片] ").slice(0, 100)).join("\n");
+  const latestChatImg = ((momsC || [])[0]?.content.match(/\[img\]([\s\S]*?)\[\/img\]/) || [])[1] || null;
+
+  const { data: annivC } = await supabase.from("anniversaries")
+    .select("label, day").order("day", { ascending: true });
+  const annivText = (annivC || []).map(a => "- " + a.day + " " + a.label).join("\n");
+
+  const { data: lineC } = await supabase.from("daily_lines")
+    .select("line, day").order("day", { ascending: false }).limit(3);
+  const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
+
 
   const { data: history } = await supabase.from("messages")
     .select("sender, content").order("created_at", { ascending: false })
@@ -99,11 +109,21 @@ async function generateReply(opts) {
       { type: "image_url", image_url: { url: opts.image } }
     ];
   }
+  else if (latestChatImg && /照片|图|拍|看看|朋友圈|moments|发的/.test(opts.message || "") && ctx.length) {
+    ctx[ctx.length - 1].content = [
+      { type: "text", text: opts.message },
+      { type: "image_url", image_url: { url: latestChatImg } }
+    ];
+  }
 
   const timeNote = opts.client_time
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "";
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-    (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
+    (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
+    (annivText ? "\n\n【星轨上的纪念日】\n" + annivText : "") +
+    (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
+    timeNote + thinkInstr(opts.thinking);
+ "\n\n【你们的共同记忆】\n" + memoryText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") + timeNote + thinkInstr(opts.thinking);timeNote + thinkInstr(opts.thinking);
 
   const out = await callAI(model, [{ role: "system", content: systemPrompt }, ...ctx],
