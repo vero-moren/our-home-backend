@@ -102,8 +102,12 @@ app.post("/chat", async (req, res) => {
       ];
     }
 
+        const timeNote = req.body.client_time
+      ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + req.body.client_time
+      : "";
     const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-      (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "");
+      (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") + timeNote;
+
 
     const out = await callAI(
       model,
