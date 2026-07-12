@@ -82,6 +82,9 @@ async function generateReply(opts) {
   const { data: memories } = await supabase.from("memories")
     .select("content").order("created_at", { ascending: true });
   const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+  const { data: momsC } = await supabase.from("moments")
+    .select("content").order("created_at", { ascending: false }).limit(5);
+  const momsCText = (momsC || []).map(m => "- " + m.content.replace(/\[img\][\s\S]*?\[\/img\]/, "[一张照片] ").slice(0, 100)).join("\n");
 
   const { data: history } = await supabase.from("messages")
     .select("sender, content").order("created_at", { ascending: false })
@@ -101,7 +104,7 @@ async function generateReply(opts) {
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "";
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
     (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
-    timeNote + thinkInstr(opts.thinking);
+    (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") + timeNote + thinkInstr(opts.thinking);timeNote + thinkInstr(opts.thinking);
 
   const out = await callAI(model, [{ role: "system", content: systemPrompt }, ...ctx],
     s.max_reply || 1000, s.temperature ?? 0.9, false);
