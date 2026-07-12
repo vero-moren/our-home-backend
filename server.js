@@ -67,67 +67,91 @@ app.post("/settings", async (req, res) => {
 });
 
 // 聊天（支持图片 + 思考链 + 设置参数）
+// 心声指令（light浅 / deep深）
+function thinkInstr(mode) {
+  if (mode === "light") return "\n\n【心声要求】每次回复的最开头，先以墨染第一人称写1~2句真实的内心低语（她这句话给你的直觉反应、没说出口的半句），用【心】和【/心】包裹，之后另起正文。心声必须是中文，是你的心里话，不是剧情分析。";
+  if (mode === "deep") return "\n\n【心声要求】每次回复的最开头，先以墨染第一人称写一小段内心翻涌（60~120字：她的话撞到了你哪里、闪过的念头、压下去的冲动），用【心】和【/心】包裹，之后另起正文。心声必须是中文，是你的心里话，不是剧情分析。";
+  return "";
+}
+
+// 生成回复（/chat /edit /regenerate 共用）
+async function generateReply(opts) {
+  const s = await getSettings();
+  const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : "anthropic/claude-sonnet-4.5";
+
+  const { data: memories } = await supabase.from("memories")
+    .select("content").order("created_at", { ascending: true });
+  const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+
+  const { data: history } = await supabase.from("messages")
+    .select("sender, content").order("created_at", { ascending: false })
+    .limit((s.context_rounds || 20) * 2);
+  const ctx = (history || []).reverse().map(m => ({
+    role: m.sender === "琰琰" ? "user" : "assistant", content: m.content
+  }));
+
+  if (opts.image && ctx.length) {
+    ctx[ctx.length - 1].content = [
+      { type: "text", text: (opts.message || "（看这张照片）") },
+      { type: "image_url", image_url: { url: opts.image } }
+    ];
+  }
+
+  const timeNote = opts.client_time
+    ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "";
+  const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
+    (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
+    timeNote + thinkInstr(opts.thinking);
+
+  const out = await callAI(model, [{ role: "system", content: systemPrompt }, ...ctx],
+    s.max_reply || 1000, s.temperature ?? 0.9, false);
+
+  let reply = (out.text || "").trim();
+  let thought = "";
+  const m = reply.match(/【心】([\s\S]*?)【\/心】/);
+  if (m) { thought = m[1].trim(); reply = reply.replace(m[0], "").trim(); }
+  if (!reply) reply = "（墨染走神了，再叫他一次）";
+
+  await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null });
+  compressIfNeeded(s).catch(console.error);
+  return { reply, thinking: thought };
+}
+
 app.post("/chat", async (req, res) => {
   try {
     const userMessage = (req.body.message || "").trim();
-    const image = req.body.image; // dataURL，可选
-    if (!userMessage && !image) return res.status(400).json({ error: "消息不能为空" });
-
-    const s = await getSettings();
-    const model = ALLOWED_MODELS.includes(req.body.model)
-      ? req.body.model : "anthropic/claude-sonnet-4.5";
-
-    await supabase.from("messages").insert({
-      sender: "琰琰",
-      content: userMessage || "[📷 一张照片]"
-    });
-
-    const { data: memories } = await supabase
-      .from("memories").select("content").order("created_at", { ascending: true });
-    const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
-
-    const { data: history } = await supabase
-      .from("messages").select("sender, content")
-      .order("created_at", { ascending: false })
-      .limit((s.context_rounds || 20) * 2);
-    const ctx = (history || []).reverse().map(m => ({
-      role: m.sender === "琰琰" ? "user" : "assistant",
-      content: m.content
-    }));
-
-    if (image && ctx.length) {
-      ctx[ctx.length - 1].content = [
-        { type: "text", text: userMessage || "（看这张照片）" },
-        { type: "image_url", image_url: { url: image } }
-      ];
-    }
-
-        const timeNote = req.body.client_time
-      ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + req.body.client_time
-      : "";
-    const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-      (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") + timeNote;
-
-
-    const out = await callAI(
-      model,
-      [{ role: "system", content: systemPrompt }, ...ctx],
-      s.max_reply || 1000,
-      s.temperature ?? 0.9,
-      true
-    );
-    const reply = out.text || "（墨染走神了，再叫他一次）";
-
-    await supabase.from("messages").insert({ sender: "墨染", content: reply });
-
-    compressIfNeeded(s).catch(console.error);
-
-    res.json({ reply, thinking: out.thinking || "" });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "服务器出错了", detail: e.message });
-  }
+    if (!userMessage && !req.body.image) return res.status(400).json({ error: "消息不能为空" });
+    await supabase.from("messages").insert({ sender: "琰琰", content: userMessage || "[📷 一张照片]" });
+    res.json(await generateReply(req.body));
+  } catch (e) { console.error(e); res.status(500).json({ error: "服务器出错了", detail: e.message }); }
 });
+
+// 编辑你的最后一句并让他重答
+app.post("/edit", async (req, res) => {
+  try {
+    const content = (req.body.content || "").trim();
+    if (!content) return res.status(400).json({ error: "内容不能为空" });
+    const { data: lastUser } = await supabase.from("messages")
+      .select("id, created_at").eq("sender", "琰琰")
+      .order("created_at", { ascending: false }).limit(1);
+    if (!lastUser?.[0]) return res.status(404).json({ error: "没有可编辑的消息" });
+    await supabase.from("messages").update({ content }).eq("id", lastUser[0].id);
+    await supabase.from("messages").delete().gt("created_at", lastUser[0].created_at);
+    res.json(await generateReply(req.body));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 重新生成他的最后一句
+app.post("/regenerate", async (req, res) => {
+  try {
+    const { data: last } = await supabase.from("messages")
+      .select("id, sender").order("created_at", { ascending: false }).limit(1);
+    if (last?.[0]?.sender === "墨染")
+      await supabase.from("messages").delete().eq("id", last[0].id);
+    res.json(await generateReply(req.body));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 
 // 粗略token估算（中英混合按字符/2）
 function estTokens(str) { return Math.ceil((str || "").length / 2); }
