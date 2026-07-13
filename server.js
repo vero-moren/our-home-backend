@@ -74,8 +74,8 @@ function thinkInstr(mode) {
   return "";
 }
 
-// 生成回复（/chat /edit /regenerate 共用）
-async function generateReply(opts) {
+// 组装上下文（generateReply 与 /chat/stream 共用）
+async function buildChatPayload(opts) {
   const sid = Number(opts.session_id) || 1;
   const s = await getSettings();
   const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : "anthropic/claude-sonnet-4.5";
@@ -83,7 +83,7 @@ async function generateReply(opts) {
   const { data: memories } = await supabase.from("memories")
     .select("content").order("created_at", { ascending: true });
   const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
-    const { data: momsC } = await supabase.from("moments")
+  const { data: momsC } = await supabase.from("moments")
     .select("content").order("created_at", { ascending: false }).limit(5);
   const momsCText = (momsC || []).map(m => "- " + m.content.replace(/\[img\][\s\S]*?\[\/img\]/, "[一张照片] ").slice(0, 100)).join("\n");
   const latestChatImg = ((momsC || [])[0]?.content.match(/\[img\]([\s\S]*?)\[\/img\]/) || [])[1] || null;
@@ -95,7 +95,6 @@ async function generateReply(opts) {
   const { data: lineC } = await supabase.from("daily_lines")
     .select("line, day").order("day", { ascending: false }).limit(3);
   const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
-
 
   const { data: history } = await supabase.from("messages")
     .select("sender, content").eq("session_id", sid)
@@ -110,8 +109,7 @@ async function generateReply(opts) {
       { type: "text", text: (opts.message || "（看这张照片）") },
       { type: "image_url", image_url: { url: opts.image } }
     ];
-  }
-  else if (latestChatImg && /照片|图|拍|看看|朋友圈|moments|发的/.test(opts.message || "") && ctx.length) {
+  } else if (latestChatImg && /照片|图|拍|看看|朋友圈|moments|发的/.test(opts.message || "") && ctx.length) {
     ctx[ctx.length - 1].content = [
       { type: "text", text: opts.message },
       { type: "image_url", image_url: { url: latestChatImg } }
@@ -127,7 +125,12 @@ async function generateReply(opts) {
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
     timeNote + thinkInstr(opts.thinking);
 
+  return { sid, s, model, systemPrompt, ctx };
+}
 
+// 生成回复（/edit /regenerate 仍走这里，非流式）
+async function generateReply(opts) {
+  const { sid, s, model, systemPrompt, ctx } = await buildChatPayload(opts);
   const out = await callAI(model, [{ role: "system", content: systemPrompt }, ...ctx],
     s.max_reply || 1000, s.temperature ?? 0.9, false);
 
@@ -150,6 +153,78 @@ app.post("/chat", async (req, res) => {
     await supabase.from("messages").insert({ sender: "琰琰", content: userMessage || "[📷 一张照片]", session_id: Number(req.body.session_id) || 1 });
     res.json(await generateReply(req.body));
   } catch (e) { console.error(e); res.status(500).json({ error: "服务器出错了", detail: e.message }); }
+});
+// 流式聊天：边生成边吐字，断开时把已生成的存档
+app.post("/chat/stream", async (req, res) => {
+  const sid = Number(req.body.session_id) || 1;
+  const userMessage = (req.body.message || "").trim();
+  if (!userMessage && !req.body.image) return res.status(400).json({ error: "消息不能为空" });
+  await supabase.from("messages").insert({ sender: "琰琰", content: userMessage || "[📷 一张照片]", session_id: sid });
+
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  let full = "", finished = false;
+  const controller = new AbortController();
+
+  const saveNow = async () => {
+    if (finished) return; finished = true;
+    let reply = full.trim(), thought = "";
+    const m = reply.match(/[【\[(（]心[】\])）]([\s\S]*?)(?:[【\[(（]\/?心[】\])）]|\n\n|$)/);
+    if (m) { thought = m[1].trim(); reply = reply.replace(m[0], "").trim(); }
+    if (!reply && thought) { reply = thought; thought = ""; }
+    if (!reply) return;
+    await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null, session_id: sid });
+  };
+
+  req.on("close", async () => { controller.abort(); await saveNow(); });
+
+  try {
+    const { s, model, systemPrompt, ctx } = await buildChatPayload(req.body);
+    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model, stream: true, max_tokens: s.max_reply || 1000,
+        temperature: s.temperature ?? 0.9,
+        messages: [{ role: "system", content: systemPrompt }, ...ctx]
+      }),
+      signal: controller.signal
+    });
+    if (!upstream.ok) {
+      res.write(`data: ${JSON.stringify({ error: await upstream.text() })}\n\n`);
+      return res.end();
+    }
+    const reader = upstream.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const d = JSON.parse(data).choices?.[0]?.delta?.content;
+          if (d) { full += d; res.write(`data: ${JSON.stringify({ t: d })}\n\n`); }
+        } catch {}
+      }
+    }
+    res.write("data: [DONE]\n\n");
+    await saveNow();
+    compressIfNeeded(s).catch(console.error);
+    res.end();
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+      res.end();
+    }
+  }
 });
 
 // 编辑你的最后一句并让他重答
