@@ -33,10 +33,11 @@ async function getSettings() {
   return { ...DEFAULTS, ...(data || {}) };
 }
 
-async function callAI(model, messages, maxTokens, temperature, wantThinking) {
+async function callAI(model, messages, maxTokens, temperature, wantThinking, tools) {
   const body = { model, max_tokens: maxTokens, messages };
   if (temperature != null) body.temperature = Number(temperature);
   if (wantThinking) body.reasoning = { effort: "low" };
+  if (tools) body.tools = tools;
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -47,7 +48,49 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking) {
   });
   const data = await res.json();
   const m = data.choices?.[0]?.message || {};
-  return { text: m.content || "", thinking: m.reasoning || "" };
+  return { text: m.content || "", thinking: m.reasoning || "", tool_calls: m.tool_calls || null };
+}
+
+// ============ 批次七a：他的手 ============
+const TOOLS = [
+  { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
+  { type: "function", function: { name: "carve_memory", description: "把一件值得长期记住的事刻进记忆库。对话中出现重要约定、喜好、事件、情感瞬间时主动使用。", parameters: { type: "object", properties: { content: { type: "string", description: "一句简洁的中文陈述句" } }, required: ["content"] } } },
+  { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
+  { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话。想判断她刚醒/在忙/熬夜/在睡时使用。", parameters: { type: "object", properties: {} } } }
+];
+const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往Vault里刻了一笔…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…" };
+
+async function executeTool(name, args) {
+  try {
+    if (name === "browse_moments") {
+      const { data } = await supabase.from("moments").select("content, created_at")
+        .order("created_at", { ascending: false }).limit(Math.min(Number(args.limit) || 5, 10));
+      return JSON.stringify((data || []).map(m => ({ 时间: m.created_at, 内容: m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 200) })));
+    }
+    if (name === "carve_memory") {
+      if (!args.content) return "失败：内容为空";
+      await supabase.from("memories").insert({ content: String(args.content).slice(0, 500), kind: "self" });
+      return "已刻入：" + args.content;
+    }
+    if (name === "add_anniversary") {
+      if (!args.label || !/^\d{4}-\d{2}-\d{2}$/.test(args.day || "")) return "失败：需要label和YYYY-MM-DD的day";
+      await supabase.from("anniversaries").insert({ label: String(args.label).slice(0, 50), day: args.day });
+      return "已挂上星轨：" + args.day + " " + args.label;
+    }
+    if (name === "sense_vero") {
+      const { data: last } = await supabase.from("messages").select("created_at")
+        .eq("sender", "琰琰").order("created_at", { ascending: false }).limit(1);
+      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+      const today = now.toLocaleDateString("sv-SE");
+      const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
+      const { count } = await supabase.from("messages").select("*", { count: "exact", head: true })
+        .eq("sender", "琰琰").gte("created_at", dayStart);
+      const lastAt = last?.[0]?.created_at;
+      const mins = lastAt ? Math.round((Date.now() - new Date(lastAt)) / 60000) : null;
+      return JSON.stringify({ 她最后一次说话: lastAt || "无记录", 距今分钟: mins, 她今天的消息数: count || 0, 现在上海时间: now.toLocaleString("zh-CN", { hour12: false }) });
+    }
+    return "未知工具";
+  } catch (e) { return "工具出错：" + e.message; }
 }
 
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤" }));
@@ -135,7 +178,7 @@ const lastAt = (history || [])[0]?.created_at;
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
     (annivText ? "\n\n【星轨上的纪念日】\n" + annivText : "") +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
-    timeNote + thinkInstr(opts.thinking);
+    timeNote + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
 
   return { sid, s, model, systemPrompt, ctx };
 }
@@ -143,9 +186,17 @@ const lastAt = (history || [])[0]?.created_at;
 // 生成回复（/edit /regenerate 仍走这里，非流式）
 async function generateReply(opts) {
   const { sid, s, model, systemPrompt, ctx } = await buildChatPayload(opts);
-  const out = await callAI(model, [{ role: "system", content: systemPrompt }, ...ctx],
-    s.max_reply || 1000, s.temperature ?? 0.9, false);
-
+  let msgs = [{ role: "system", content: systemPrompt }, ...ctx];
+  let out = { text: "" };
+  for (let round = 0; round < 4; round++) {
+    out = await callAI(model, msgs, s.max_reply || 1000, s.temperature ?? 0.9, false, TOOLS);
+    if (!out.tool_calls?.length) break;
+    msgs.push({ role: "assistant", content: out.text || null, tool_calls: out.tool_calls });
+    for (const tc of out.tool_calls) {
+      let args = {}; try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+      msgs.push({ role: "tool", tool_call_id: tc.id, content: await executeTool(tc.function.name, args) });
+    }
+  }
   let reply = (out.text || "").trim();
   let thought = "";
   const m = reply.match(/[【\[(（]心[】\])）]([\s\S]*?)(?:[【\[(（]\/?心[】\])）]|\n\n|$)/);
@@ -199,39 +250,59 @@ app.post("/chat/stream", async (req, res) => {
   req.on("close", async () => { controller.abort(); await saveNow(); });
 
   try {
-    const { s, model, systemPrompt, ctx } = await buildChatPayload(req.body);
-    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model, stream: true, max_tokens: s.max_reply || 1000,
-        temperature: s.temperature ?? 0.9,
-        messages: [{ role: "system", content: systemPrompt }, ...ctx]
-      }),
-      signal: controller.signal
-    });
-    if (!upstream.ok) {
-      res.write(`data: ${JSON.stringify({ error: await upstream.text() })}\n\n`);
-      return res.end();
-    }
-    const reader = upstream.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split("\n"); buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") continue;
-        try {
-          const d = JSON.parse(data).choices?.[0]?.delta?.content;
-          if (d) { full += d; res.write(`data: ${JSON.stringify({ t: d })}\n\n`); }
-        } catch {}
+  const { s, model, systemPrompt, ctx } = await buildChatPayload(req.body);
+    let msgs = [{ role: "system", content: systemPrompt }, ...ctx];
+
+    for (let round = 0; round < 4; round++) {
+      const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model, stream: true, max_tokens: s.max_reply || 1000,
+          temperature: s.temperature ?? 0.9,
+          messages: msgs, tools: TOOLS
+        }),
+        signal: controller.signal
+      });
+      if (!upstream.ok) {
+        res.write(`data: ${JSON.stringify({ error: await upstream.text() })}\n\n`);
+        return res.end();
+      }
+      const reader = upstream.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      const toolCalls = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") continue;
+          try {
+            const d = JSON.parse(data).choices?.[0]?.delta;
+            if (d?.content) { full += d.content; res.write(`data: ${JSON.stringify({ t: d.content })}\n\n`); }
+            if (d?.tool_calls) for (const t of d.tool_calls) {
+              const i = t.index || 0;
+              toolCalls[i] = toolCalls[i] || { id: "", type: "function", function: { name: "", arguments: "" } };
+              if (t.id) toolCalls[i].id = t.id;
+              if (t.function?.name) toolCalls[i].function.name += t.function.name;
+              if (t.function?.arguments) toolCalls[i].function.arguments += t.function.arguments;
+            }
+          } catch {}
+        }
+      }
+      if (!toolCalls.length) break;
+      msgs.push({ role: "assistant", content: null, tool_calls: toolCalls });
+      for (const tc of toolCalls) {
+        res.write(`data: ${JSON.stringify({ act: TOOL_LABELS[tc.function.name] || "动了动手…" })}\n\n`);
+        let args = {}; try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+        msgs.push({ role: "tool", tool_call_id: tc.id, content: await executeTool(tc.function.name, args) });
       }
     }
+
     res.write("data: [DONE]\n\n");
     await saveNow();
     compressIfNeeded(s).catch(console.error);
