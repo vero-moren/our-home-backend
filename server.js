@@ -76,6 +76,7 @@ function thinkInstr(mode) {
 
 // 生成回复（/chat /edit /regenerate 共用）
 async function generateReply(opts) {
+  const sid = Number(opts.session_id) || 1;
   const s = await getSettings();
   const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : "anthropic/claude-sonnet-4.5";
 
@@ -97,7 +98,8 @@ async function generateReply(opts) {
 
 
   const { data: history } = await supabase.from("messages")
-    .select("sender, content").order("created_at", { ascending: false })
+    .select("sender, content").eq("session_id", sid)
+    .order("created_at", { ascending: false })
     .limit((s.context_rounds || 20) * 2);
   const ctx = (history || []).reverse().map(m => ({
     role: m.sender === "琰琰" ? "user" : "assistant", content: m.content
@@ -135,7 +137,7 @@ async function generateReply(opts) {
   if (m) { thought = m[1].trim(); reply = reply.replace(m[0], "").trim(); }
   if (!reply) reply = "（墨染走神了，再叫他一次）";
 
-  await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null });
+  await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null, session_id: sid });
   compressIfNeeded(s).catch(console.error);
   return { reply, thinking: thought };
 }
@@ -144,7 +146,7 @@ app.post("/chat", async (req, res) => {
   try {
     const userMessage = (req.body.message || "").trim();
     if (!userMessage && !req.body.image) return res.status(400).json({ error: "消息不能为空" });
-    await supabase.from("messages").insert({ sender: "琰琰", content: userMessage || "[📷 一张照片]" });
+    await supabase.from("messages").insert({ sender: "琰琰", content: userMessage || "[📷 一张照片]", session_id: Number(req.body.session_id) || 1 });
     res.json(await generateReply(req.body));
   } catch (e) { console.error(e); res.status(500).json({ error: "服务器出错了", detail: e.message }); }
 });
