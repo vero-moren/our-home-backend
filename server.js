@@ -341,7 +341,7 @@ async function sendBark(title, body) {
         device_key: process.env.BARK_KEY,
         title: title,
         body: body.slice(0, 300),
-        icon: "https://our-home-plum.vercel.app/icon.png",
+        icon: "https://our-home-plum.vercel.app/icon.PNG",
         sound: "healthnotification",
         badge: 1,
         group: "moren",
