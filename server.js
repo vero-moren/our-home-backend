@@ -153,13 +153,14 @@ app.post("/chat", async (req, res) => {
 app.post("/edit", async (req, res) => {
   try {
     const content = (req.body.content || "").trim();
+    const sid = Number(req.body.session_id) || 1;
     if (!content) return res.status(400).json({ error: "内容不能为空" });
     const { data: lastUser } = await supabase.from("messages")
-      .select("id, created_at").eq("sender", "琰琰")
+      .select("id, created_at").eq("sender", "琰琰").eq("session_id", sid)
       .order("created_at", { ascending: false }).limit(1);
     if (!lastUser?.[0]) return res.status(404).json({ error: "没有可编辑的消息" });
     await supabase.from("messages").update({ content }).eq("id", lastUser[0].id);
-    await supabase.from("messages").delete().gt("created_at", lastUser[0].created_at);
+    await supabase.from("messages").delete().gt("created_at", lastUser[0].created_at).eq("session_id", sid);
     res.json(await generateReply(req.body));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -167,8 +168,10 @@ app.post("/edit", async (req, res) => {
 // 重新生成他的最后一句
 app.post("/regenerate", async (req, res) => {
   try {
+    const sid = Number(req.body.session_id) || 1;
     const { data: last } = await supabase.from("messages")
-      .select("id, sender").order("created_at", { ascending: false }).limit(1);
+      .select("id, sender").eq("session_id", sid)
+      .order("created_at", { ascending: false }).limit(1);
     if (last?.[0]?.sender === "墨染")
       await supabase.from("messages").delete().eq("id", last[0].id);
     res.json(await generateReply(req.body));
@@ -358,7 +361,7 @@ ${momText || "（暂无动态）"}
         msg = cut > 0 ? head.slice(0, cut + 1) : head;
       }
 
-      await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true });
+      await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true, session_id: 1 });
       await sendBark("moren", msg);
       res.json({ pushed: true, sent: msg });
     } finally { pushLock = false; }
