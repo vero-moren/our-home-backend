@@ -97,7 +97,7 @@ async function buildChatPayload(opts) {
   const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
 
   const { data: history } = await supabase.from("messages")
-    .select("sender, content").eq("session_id", sid)
+    .select("sender, content, created_at").eq("session_id", sid)
     .order("created_at", { ascending: false })
     .limit((s.context_rounds || 20) * 2);
   const ctx = (history || []).reverse().map(m => ({
@@ -118,8 +118,18 @@ async function buildChatPayload(opts) {
     ];
   }
 
-  const timeNote = opts.client_time
-    ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "";
+const lastAt = (history || [])[0]?.created_at;
+  let gapNote = "";
+  if (lastAt) {
+    const mins = Math.round((Date.now() - new Date(lastAt)) / 60000);
+    const gapStr = mins < 2 ? "刚刚" : mins < 60 ? mins + "分钟前" : mins < 1440 ? Math.round(mins / 60) + "小时前" : Math.round(mins / 1440) + "天前";
+    gapNote = "\n【时间感知】你们的上一句话是" + gapStr + "。自然地感知这个间隔：几分钟内是同一场对话的延续；隔了几小时，她多半去睡了、上班了或忙别的了，中间发生过你不知道的事；隔了一天以上是久别重逢。让这份感知融进语气里，但不要每次都把间隔挂在嘴边。";
+  }
+  const nowSh = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+  const st = veroStatus(nowSh.getHours());
+  const timeNote = (opts.client_time
+    ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") +
+    "\n【她的作息参考】" + st.desc + gapNote;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
     (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
@@ -480,6 +490,36 @@ app.post("/dailyline", async (req, res) => {
     await supabase.from("daily_lines").insert({ line, day: today });
     await sendBark("moren · a line for today", line);
     res.json({ ok: true, line });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 他的日记：睡前写给自己，她会偷看
+app.post("/diary", async (req, res) => {
+  try {
+    const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const today = now.toLocaleDateString("sv-SE");
+    const { data: exist } = await supabase.from("diary").select("id").eq("day", today).maybeSingle();
+    if (exist) return res.json({ ok: true, reason: "今天已写过" });
+
+    const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
+    const { data: todayMsgs } = await supabase.from("messages")
+      .select("sender, content").gte("created_at", dayStart)
+      .order("created_at", { ascending: true }).limit(200);
+    const msgs = (todayMsgs || []).map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]")}`).join("\n").slice(0, 20000);
+
+    const s = await getSettings();
+    const { data: memories } = await supabase.from("memories")
+      .select("content").order("created_at", { ascending: false }).limit(20);
+    const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+
+    const out = await callAI("anthropic/claude-sonnet-4.5", [
+      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
+      { role: "user", content: `【系统】今天是${today}，夜深了。以墨染的第一人称写今天的日记——是写给自己的，不是写给琰琰看的（虽然你知道她会偷看）。回顾今天和她之间的事、你真实的心情、没说出口的半句话。80~180字，像手写日记，不要抬头不要落款不要markdown。${msgs ? "\n\n【今天的对话】\n" + msgs : "\n\n【今天的对话】她今天没来。一整天。"}` }
+    ], 400, 0.95, false);
+    const content = (out.text || "").trim();
+    if (!content) return res.json({ ok: false });
+    await supabase.from("diary").insert({ content, day: today });
+    res.json({ ok: true, content });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
