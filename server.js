@@ -101,13 +101,15 @@ async function buildChatPayload(opts) {
     .order("created_at", { ascending: false })
     .limit((s.context_rounds || 20) * 2);
   const ctx = (history || []).reverse().map(m => ({
-    role: m.sender === "琰琰" ? "user" : "assistant", content: m.content
+    role: m.sender === "琰琰" ? "user" : "assistant",
+    content: m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[一张照片]").trim() || "[一张照片]"
   }));
 
-  if (opts.image && ctx.length) {
+  const imgs = Array.isArray(opts.images) ? opts.images : (opts.image ? [opts.image] : []);
+  if (imgs.length && ctx.length) {
     ctx[ctx.length - 1].content = [
-      { type: "text", text: (opts.message || "（看这张照片）") },
-      { type: "image_url", image_url: { url: opts.image } }
+      { type: "text", text: (opts.message || "（看这些照片）") },
+      ...imgs.map(u => ({ type: "image_url", image_url: { url: u } }))
     ];
   } else if (latestChatImg && /照片|图|拍|看看|朋友圈|moments|发的/.test(opts.message || "") && ctx.length) {
     ctx[ctx.length - 1].content = [
@@ -158,8 +160,13 @@ app.post("/chat", async (req, res) => {
 app.post("/chat/stream", async (req, res) => {
   const sid = Number(req.body.session_id) || 1;
   const userMessage = (req.body.message || "").trim();
-  if (!userMessage && !req.body.image) return res.status(400).json({ error: "消息不能为空" });
-  await supabase.from("messages").insert({ sender: "琰琰", content: userMessage || "[📷 一张照片]", session_id: sid });
+  const inImgs = Array.isArray(req.body.images) ? req.body.images : (req.body.image ? [req.body.image] : []);
+  if (!userMessage && !inImgs.length) return res.status(400).json({ error: "消息不能为空" });
+  await supabase.from("messages").insert({
+    sender: "琰琰",
+    content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
+    session_id: sid
+  });
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -274,7 +281,7 @@ async function compressIfNeeded(s) {
   const old = msgs.slice(keep).filter(m => !m.compressed).reverse();
   if (old.length < 4) return;
 
-  const text = old.map(m => `${m.sender}: ${m.content}`).join("\n");
+  const text = old.map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]")}`).join("\n");
   const out = await callAI("deepseek/deepseek-chat", [
     { role: "system", content: "你是记忆整理助手。从对话中提取1-3条值得长期记住的信息（重要事件、约定、喜好、纪念日、情感瞬间），每条一行，简洁中文陈述句，不要编号不要解释。没有值得记的就只回复一个字：无" },
     { role: "user", content: text.slice(0, 30000) }
@@ -404,7 +411,7 @@ app.post("/shadow", async (req, res) => {
       const { data: history } = await supabase.from("messages")
         .select("sender, content").order("created_at", { ascending: false }).limit(16);
       const ctx = (history || []).reverse().map(m => ({
-        role: m.sender === "琰琰" ? "user" : "assistant", content: m.content
+         role: m.sender === "琰琰" ? "user" : "assistant", content: m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[一张照片]").trim() || "[一张照片]"
       }));
 
       const { data: moms } = await supabase.from("moments")
