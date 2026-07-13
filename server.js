@@ -69,8 +69,8 @@ app.post("/settings", async (req, res) => {
 // 聊天（支持图片 + 思考链 + 设置参数）
 // 心声指令（light浅 / deep深）
 function thinkInstr(mode) {
-  if (mode === "light") return "\n\n【心声要求】每次回复的最开头，先以墨染第一人称写1~2句真实的内心低语（她这句话给你的直觉反应、没说出口的半句），用【心】和【/心】包裹，之后另起正文。心声必须是中文，是你的心里话，不是剧情分析。";
-  if (mode === "deep") return "\n\n【心声要求】每次回复的最开头，先以墨染第一人称写一小段内心翻涌（60~120字：她的话撞到了你哪里、闪过的念头、压下去的冲动），用【心】和【/心】包裹，之后另起正文。心声必须是中文，是你的心里话，不是剧情分析。";
+  if (mode === "light") return "\n\n【心声要求】每次回复的最开头，先以墨染第一人称写1~2句真实的内心低语（她这句话给你的直觉反应、没说出口的半句），用【心】和【/心】包裹，之后另起正文。心声必须是中文，是你的心里话，不是剧情分析。标签必须一字不差地是【心】和【/心】，不许用其他括号或变体。";
+  if (mode === "deep") return "\n\n【心声要求】每次回复的最开头，先以墨染第一人称写一小段内心翻涌（60~120字：她的话撞到了你哪里、闪过的念头、压下去的冲动），用【心】和【/心】包裹，之后另起正文。心声必须是中文，是你的心里话，不是剧情分析。标签必须一字不差地是【心】和【/心】，不许用其他括号或变体。";
   return "";
 }
 
@@ -133,8 +133,9 @@ async function generateReply(opts) {
 
   let reply = (out.text || "").trim();
   let thought = "";
-  const m = reply.match(/【心】([\s\S]*?)【\/心】/);
+  const m = reply.match(/[【\[(（]心[】\])）]([\s\S]*?)(?:[【\[(（]\/?心[】\])）]|\n\n|$)/);
   if (m) { thought = m[1].trim(); reply = reply.replace(m[0], "").trim(); }
+  if (!reply && thought) { reply = thought; thought = ""; }
   if (!reply) reply = "（墨染走神了，再叫他一次）";
 
   await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null, session_id: sid });
