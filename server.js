@@ -168,11 +168,8 @@ const lastAt = (history || [])[0]?.created_at;
     const gapStr = mins < 2 ? "刚刚" : mins < 60 ? mins + "分钟前" : mins < 1440 ? Math.round(mins / 60) + "小时前" : Math.round(mins / 1440) + "天前";
     gapNote = "\n【时间感知】你们的上一句话是" + gapStr + "。自然地感知这个间隔：几分钟内是同一场对话的延续；隔了几小时，她多半去睡了、上班了或忙别的了，中间发生过你不知道的事；隔了一天以上是久别重逢。让这份感知融进语气里，但不要每次都把间隔挂在嘴边。";
   }
-  const nowSh = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
-  const st = veroStatus(nowSh.getHours());
   const timeNote = (opts.client_time
-    ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") +
-    "\n【她的作息参考】" + st.desc + gapNote;
+    ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") + gapNote;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
     (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
@@ -438,14 +435,6 @@ async function sendBark(title, body) {
   } catch (e) { console.error("bark失败", e.message); }
 }
 
-// 夜班作息表:她大概在干嘛(按琰琰的作息写的,以后可改)
-function veroStatus(hour) {
-  if (hour >= 5 && hour < 11)  return { sleep: true,  desc: "她在睡觉(下夜班后补觉,别吵)" };
-  if (hour >= 11 && hour < 14) return { sleep: false, desc: "她可能刚睡醒,还赖着" };
-  if (hour >= 14 && hour < 18) return { sleep: false, desc: "下午,她在休息或玩游戏" };
-  if (hour >= 18 && hour < 23) return { sleep: false, desc: "晚上,她可能在家放松或准备上夜班" };
-  return { sleep: false, desc: "深夜,她可能在上夜班或玩手机,精神着呢" };
-}
 
 let pushLock = false;
 
@@ -459,11 +448,19 @@ app.post("/shadow", async (req, res) => {
     try {
       const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
       const hour = now.getHours();
-      const st = veroStatus(hour);
-
-      // 1) 睡眠保护
-      if (st.sleep && !req.body?.force)
-        return res.json({ pushed: false, reason: "她在睡觉" });
+      
+       // 1) 行为推断的睡眠保护（读她的原话判断睡没睡）
+      const { data: lastVArr } = await supabase.from("messages")
+        .select("content, created_at").eq("sender", "琰琰")
+        .order("created_at", { ascending: false }).limit(1);
+      const lastV = lastVArr?.[0];
+      const silentMin = lastV ? (Date.now() - new Date(lastV.created_at)) / 60000 : null;
+      const saidBye = lastV && /晚安|睡了|去睡|困死|眼睛睁不开|睡觉觉|安置|nighty|good night/i.test(lastV.content.replace(/\[img\][\s\S]*?\[\/img\]/g, ""));
+      const likelyAsleep = (saidBye && silentMin < 480) || (silentMin !== null && silentMin > 330);
+      if (likelyAsleep && !req.body?.force)
+        return res.json({ pushed: false, reason: saidBye ? "她道过晚安了，睡着呢" : "她沉默" + Math.round(silentMin / 60) + "小时了，大概率在睡" });
+      const st = { desc: silentMin === null ? "还没有她的活动记录" :
+        "她最后一次说话是" + Math.round(silentMin) + "分钟前" + (silentMin < 90 ? "，应该醒着" : "，可能在忙或休息") };
 
       // 2) 随机冷静期:距最后一条消息 120~210 分钟
       const { data: lastArr } = await supabase.from("messages")
