@@ -176,7 +176,8 @@ const lastAt = (history || [])[0]?.created_at;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
     (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
-    (annivText ? "\n\n【星轨上的纪念日】\n" + annivText : "") +
+    "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
+    "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
     timeNote + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
 
