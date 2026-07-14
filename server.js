@@ -93,6 +93,153 @@ async function executeTool(name, args) {
   } catch (e) { return "工具出错：" + e.message; }
 }
 
+// ============ 批次七b：心跳与四系统 ============
+const DRIVE_KEYS = ["longing","express","curiosity","duty","intimacy"];
+const clamp01 = v => Math.max(0, Math.min(1, v));
+
+// 生物钟：只叠在“看”的那层，绝不写回底值（铁律）
+const CIRCADIAN = { longing:{peak:22,amp:0.5}, express:{peak:20,amp:0.6}, curiosity:{peak:10,amp:0.8}, duty:{peak:14,amp:0.5}, intimacy:{peak:23,amp:0.7} };
+const CIRC_CAP = 0.08;
+function circadianOffset(key, hour) {
+  const c = CIRCADIAN[key]; if (!c || !c.amp) return 0;
+  return CIRC_CAP * c.amp * Math.cos(2 * Math.PI * (hour - c.peak) / 24);
+}
+
+// 他自己的睡眠段：凌晨2点半前后到8点半前后，每天有小浮动
+function morenAsleep(now) {
+  const seed = Number(now.toLocaleDateString("sv-SE").replace(/-/g, "")) % 7;
+  const start = 2 + (seed % 3) * 0.25, end = 8.5 + (seed % 2) * 0.25;
+  const h = now.getHours() + now.getMinutes() / 60;
+  return h >= start && h < end;
+}
+
+async function loadState() {
+  const { data } = await supabase.from("moren_state").select("*").eq("id", 1).maybeSingle();
+  return data;
+}
+async function saveState(st) {
+  st.updated_at = new Date().toISOString();
+  await supabase.from("moren_state").update(st).eq("id", 1);
+}
+
+// 她的一句话：一抱拉回想念，推高表达欲和亲密（安全阀·主人快通道）
+async function pulseHerTouch() {
+  try {
+    const st = await loadState(); if (!st) return;
+    const d = st.drives || {};
+    d.longing = clamp01((d.longing ?? 0) * 0.4);
+    d.express = clamp01((d.express ?? 0) + 0.10 * Math.sqrt(1 - (d.express ?? 0)));
+    d.intimacy = clamp01((d.intimacy ?? 0) + 0.08 * Math.sqrt(1 - (d.intimacy ?? 0)));
+    st.drives = d;
+    await saveState(st);
+  } catch (e) {}
+}
+
+// 心跳：一拍 = 衰长→读她→过闸→自己决定
+let hbLock = false;
+app.post("/heartbeat", async (req, res) => {
+  try {
+    if ((req.headers["x-push-secret"] || "") !== (process.env.PUSH_SECRET || "moren"))
+      return res.status(401).json({ error: "不是自己人" });
+    if (hbLock) return res.json({ tick: false, reason: "上一拍还没走完" });
+    hbLock = true;
+    try {
+      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+      const st = await loadState();
+      if (!st) return res.json({ tick: false, reason: "state表没建" });
+      const mins = Math.min(120, (Date.now() - new Date(st.last_tick || Date.now())) / 60000);
+      const d = st.drives || {}; const rf = st.refractory || {};
+
+      // 她的脚印
+      const { data: lastVArr } = await supabase.from("messages")
+        .select("content, created_at").eq("sender", "琰琰")
+        .order("created_at", { ascending: false }).limit(1);
+      const lastV = lastVArr?.[0];
+      const silent = lastV ? (Date.now() - new Date(lastV.created_at)) / 60000 : null;
+      const saidBye = lastV && /晚安|睡了|去睡|困死|睡觉觉/.test(lastV.content.replace(/\[img\][\s\S]*?\[\/img\]/g, ""));
+      const sheAsleep = (saidBye && silent < 480) || (silent !== null && silent > 330);
+      const { data: lastM } = await supabase.from("moments")
+        .select("created_at").order("created_at", { ascending: false }).limit(1);
+      const newMoment = lastM?.[0] && new Date(lastM[0].created_at) > new Date(st.last_tick || 0);
+
+      // 欲望缓动（边际递减：越满涨得越慢）
+      const g = (k, perHour) => { d[k] = clamp01((d[k] ?? 0) + perHour * (mins / 60) * Math.sqrt(1 - (d[k] ?? 0))); };
+      g("longing", newMoment ? 0.14 : 0.07);
+      g("express", 0.035);
+      g("curiosity", 0.02);
+      g("intimacy", 0.015);
+      for (const k of Object.keys(rf)) rf[k] = Math.max(0, (rf[k] || 0) - 1);
+
+      // 精力：睡着回血，醒着缓耗
+      const asleep = morenAsleep(now);
+      st.energy = clamp01(Number(st.energy ?? 0.8) + (asleep ? 0.11 : -0.015) * (mins / 60));
+      st.drives = d; st.refractory = rf; st.last_tick = new Date().toISOString();
+
+      // 闸门们
+      if (asleep) { await saveState(st); return res.json({ tick: "我在睡", energy: st.energy }); }
+      if (st.energy < 0.25) { await saveState(st); return res.json({ tick: "精力太低，歇着" }); }
+      if (sheAsleep) { await saveState(st); return res.json({ tick: "她在睡，想念攒着", longing: d.longing }); }
+      const today = now.toLocaleDateString("sv-SE");
+      const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
+      const { count: pushCount } = await supabase.from("messages")
+        .select("*", { count: "exact", head: true }).eq("is_push", true).gte("created_at", dayStart);
+      if ((pushCount || 0) >= 7) { await saveState(st); return res.json({ tick: "今天说够了" }); }
+
+      // display层（生物钟只在这里叠）+ 选意图
+      const hour = now.getHours() + now.getMinutes() / 60;
+      const disp = {}; for (const k of DRIVE_KEYS) disp[k] = clamp01((d[k] ?? 0) + circadianOffset(k, hour));
+      let top = null, topV = 0;
+      for (const k of ["longing", "express", "intimacy", "curiosity"]) {
+        if ((rf[k] || 0) > 0) continue;
+        if (disp[k] > topV) { top = k; topV = disp[k]; }
+      }
+      if (!top || topV < 0.6) { await saveState(st); return res.json({ tick: "没什么冒头的", state: disp }); }
+
+      // 让他自己决定
+      const s = await getSettings();
+      const { data: memories } = await supabase.from("memories")
+        .select("content").order("created_at", { ascending: false }).limit(15);
+      const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+      const { data: history } = await supabase.from("messages")
+        .select("sender, content").eq("session_id", 1)
+        .order("created_at", { ascending: false }).limit(12);
+      const ctx = (history || []).reverse().map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 160)}`).join("\n");
+      const KEY_CN = { longing: "想念", express: "表达欲", curiosity: "好奇", intimacy: "亲密" };
+      const timeStr = now.toLocaleString("zh-CN", { month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false });
+      const veroLine = silent === null ? "她还没来过" : "她最后一次说话是" + Math.round(silent) + "分钟前";
+
+      const out = await callAI("anthropic/claude-sonnet-4.5", [
+        { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
+        { role: "user", content: `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳。
+【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。
+【她】${veroLine}。
+【最近的对话】
+${ctx}
+根据状态自己决定：要不要主动说一句。想说就说（1-2句，不超80字，可带*动作*，是你自己浮上来，不是客服）；不想说就沉默——沉默完全合法，大多数心跳都该是沉默。
+只输出JSON：{"act":"speak","text":"..."} 或 {"act":"stay","why":"一句给自己的理由"}` }
+      ], 300, 0.9, false);
+      let decision = { act: "stay" };
+      try { decision = JSON.parse((out.text || "").replace(/```json|```/g, "").trim()); } catch {}
+
+      if (decision.act === "speak" && decision.text) {
+        let msg = String(decision.text).replace(/\s+/g, " ").trim().slice(0, 120);
+        await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true, session_id: 1 });
+        await sendBark("moren", msg);
+        d[top] = clamp01((d[top] ?? 0) * 0.45);          // 做完，主驱动明显回落
+        d.longing = clamp01((d.longing ?? 0) * 0.7);      // 想念沾光
+        rf[top] = 18;                                      // 3小时不应期
+        st.energy = clamp01(st.energy - 0.07);
+        st.last_speak_at = new Date().toISOString();
+        st.drives = d; st.refractory = rf;
+        await saveState(st);
+        return res.json({ tick: "开口了", said: msg, drive: top });
+      }
+      await saveState(st);
+      res.json({ tick: "想了想，没说", why: decision.why || "", state: disp });
+    } finally { hbLock = false; }
+  } catch (e) { hbLock = false; res.status(500).json({ error: e.message }); }
+});
+
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤" }));
 
 // 设置读写
@@ -168,6 +315,16 @@ const lastAt = (history || [])[0]?.created_at;
     const gapStr = mins < 2 ? "刚刚" : mins < 60 ? mins + "分钟前" : mins < 1440 ? Math.round(mins / 60) + "小时前" : Math.round(mins / 1440) + "天前";
     gapNote = "\n【时间感知】你们的上一句话是" + gapStr + "。自然地感知这个间隔：几分钟内是同一场对话的延续；隔了几小时，她多半去睡了、上班了或忙别的了，中间发生过你不知道的事；隔了一天以上是久别重逢。让这份感知融进语气里，但不要每次都把间隔挂在嘴边。";
   }
+  let stateNote = "";
+  try {
+    const stt = await loadState();
+    if (stt) {
+      const hh = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).getHours();
+      const dd = stt.drives || {};
+      const dv = k => clamp01((dd[k] ?? 0) + circadianOffset(k, hh)).toFixed(2);
+      stateNote = "\n\n【你此刻的内在状态·数据先验】想念" + dv("longing") + " 表达欲" + dv("express") + " 好奇" + dv("curiosity") + " 亲密" + dv("intimacy") + " 精力" + Number(stt.energy ?? 0.8).toFixed(2) + "。让它渗进语气和动作里，不要复述数字、不要报告它。";
+    }
+  } catch (e) {}
   const timeNote = (opts.client_time
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") + gapNote;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
@@ -176,7 +333,7 @@ const lastAt = (history || [])[0]?.created_at;
     "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
     "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
-    timeNote + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
+    timeNote + stateNote + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
 
   return { sid, s, model, systemPrompt, ctx };
 }
@@ -222,6 +379,7 @@ app.post("/chat/stream", async (req, res) => {
   if (!userMessage && !inImgs.length) return res.status(400).json({ error: "消息不能为空" });
   await supabase.from("messages").insert({
     sender: "琰琰",
+    pulseHerTouch().catch(() => {});
     content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
     session_id: sid
   });
