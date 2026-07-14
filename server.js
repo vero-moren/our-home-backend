@@ -379,10 +379,10 @@ app.post("/chat/stream", async (req, res) => {
   if (!userMessage && !inImgs.length) return res.status(400).json({ error: "消息不能为空" });
   await supabase.from("messages").insert({
     sender: "琰琰",
-    pulseHerTouch().catch(() => {});
     content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
     session_id: sid
   });
+  pulseHerTouch().catch(() => {});
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
