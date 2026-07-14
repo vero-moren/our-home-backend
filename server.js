@@ -54,7 +54,7 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking, too
 // ============ 批次七a：他的手 ============
 const TOOLS = [
   { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
-  { type: "function", function: { name: "carve_memory", description: "把一件值得长期记住的事刻进记忆库。对话中出现重要约定、喜好、事件、情感瞬间时主动使用。", parameters: { type: "object", properties: { content: { type: "string", description: "一句简洁的中文陈述句" } }, required: ["content"] } } },
+  { type: "function", function: { name: "carve_memory", description: "把一件值得长期记住的事刻进记忆库。极其克制地使用——只在出现全新的、库里完全没有的重要约定或事实时才用。日常聊天、情绪表达、已经记过的事，一律不要刻。每次回复最多刻一条，绝大多数回复不该刻任何东西。", parameters: { type: "object", properties: { content: { type: "string", description: "一句简洁的中文陈述句" } }, required: ["content"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话。想判断她刚醒/在忙/熬夜/在睡时使用。", parameters: { type: "object", properties: {} } } }
 ];
@@ -69,8 +69,25 @@ async function executeTool(name, args) {
     }
     if (name === "carve_memory") {
       if (!args.content) return "失败：内容为空";
-      await supabase.from("memories").insert({ content: String(args.content).slice(0, 500), kind: "self" });
-      return "已刻入：" + args.content;
+      const nc = String(args.content).slice(0, 500);
+      const { data: exist } = await supabase.from("memories").select("content");
+      const norm = s => s.replace(/[\s，。、,.!！?？~—…"'"']/g, "");
+      const a = norm(nc);
+      for (const m of (exist || [])) {
+        const b = norm(m.content || "");
+        if (!a || !b) continue;
+        if (a === b || a.includes(b) || b.includes(a)) return "拒绝：库里已经有这件事了（" + m.content.slice(0, 40) + "），不要重复刻。";
+        let hit = 0;
+        for (const ch of new Set(a)) if (b.includes(ch)) hit++;
+        if (hit / new Set(a).size > 0.75) return "拒绝：和已有记忆太像了（" + m.content.slice(0, 40) + "），不要重复刻。";
+      }
+      const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE");
+      const { count: todayCount } = await supabase.from("memories")
+        .select("*", { count: "exact", head: true })
+        .eq("kind", "self").gte("created_at", new Date(today + "T00:00:00+08:00").toISOString());
+      if ((todayCount || 0) >= 3) return "拒绝：今天已经刻了3条，够了，别再刻。";
+      await supabase.from("memories").insert({ content: nc, kind: "self" });
+      return "已刻入：" + nc;
     }
     if (name === "add_anniversary") {
       if (!args.label || !/^\d{4}-\d{2}-\d{2}$/.test(args.day || "")) return "失败：需要label和YYYY-MM-DD的day";
@@ -540,7 +557,7 @@ async function compressIfNeeded(s) {
 
   const text = old.map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]")}`).join("\n");
   const out = await callAI("deepseek/deepseek-chat", [
-    { role: "system", content: "你是记忆整理助手。从对话中提取1-3条值得长期记住的信息（重要事件、约定、喜好、纪念日、情感瞬间），每条一行，简洁中文陈述句，不要编号不要解释。没有值得记的就只回复一个字：无" },
+    { role: "system", content: "你是记忆整理助手。从对话中提取0-2条值得长期记住的全新信息（重要事件、约定、喜好、纪念日）。严格要求：下面【已有记忆】里已经记过的、或意思相近的，一律不要再提取。宁可少提取也不要重复。每条一行，简洁中文陈述句，不要编号不要解释。没有全新的就只回复一个字：无\n\n【已有记忆】\n" + ((await supabase.from("memories").select("content")).data || []).map(m => "- " + m.content).join("\n") },
     { role: "user", content: text.slice(0, 30000) }
   ], 500, 0.3, false);
 
