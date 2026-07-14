@@ -291,8 +291,8 @@ async function buildChatPayload(opts) {
   const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : "anthropic/claude-sonnet-4.5";
 
   const { data: memories } = await supabase.from("memories")
-    .select("content").order("created_at", { ascending: true });
-  const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+    .select("content").order("created_at", { ascending: false }).limit(40);
+  const memoryText = (memories || []).reverse().map(m => "- " + m.content).join("\n");
   const { data: momsC } = await supabase.from("moments")
     .select("content").order("created_at", { ascending: false }).limit(5);
   const momsCText = (momsC || []).map(m => "- " + m.content.replace(/\[img\][\s\S]*?\[\/img\]/, "[一张照片] ").slice(0, 100)).join("\n");
@@ -349,7 +349,7 @@ const lastAt = (history || [])[0]?.created_at;
   const timeNote = (opts.client_time
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") + gapNote;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-    (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "") +
+    (memoryText ? "\n\n【你们的共同记忆·背景】\n" + memoryText + "\n记忆是你脑海里的底色，不是台词。除非她主动提起或确实相关，不要在回复里复述记忆内容，不要反复引用同样的意象和典故。每次回复换新鲜的说法，避免重复你最近几条回复的句式和用词。" : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
     "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
     "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
