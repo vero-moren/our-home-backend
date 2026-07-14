@@ -310,10 +310,11 @@ async function buildChatPayload(opts) {
     .select("sender, content, created_at").eq("session_id", sid)
     .order("created_at", { ascending: false })
     .limit((s.context_rounds || 20) * 2);
-  const ctx = (history || []).reverse().map(m => ({
-    role: m.sender === "琰琰" ? "user" : "assistant",
-    content: m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[一张照片]").trim() || "[一张照片]"
-  }));
+  const ctx = (history || []).reverse().map(m => {
+    const t = new Date(m.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    const body = m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[一张照片]").trim() || "[一张照片]";
+    return { role: m.sender === "琰琰" ? "user" : "assistant", content: "〔" + t + "〕" + body };
+  });
 
   const imgs = Array.isArray(opts.images) ? opts.images : (opts.image ? [opts.image] : []);
   if (imgs.length && ctx.length) {
@@ -353,7 +354,7 @@ const lastAt = (history || [])[0]?.created_at;
     "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
     "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
-    timeNote + stateNote + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
+    timeNote + stateNote + "\n每条历史消息开头的〔时间〕是它真实的发生时刻，仅供你感知节奏，回复时不要模仿这个格式。" + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
 
   return { sid, s, model, systemPrompt, ctx };
 }
