@@ -150,6 +150,26 @@ app.post("/heartbeat", async (req, res) => {
       const mins = Math.min(120, (Date.now() - new Date(st.last_tick || Date.now())) / 60000);
       const d = st.drives || {}; const rf = st.refractory || {};
 
+// 他的内心（只读面板）
+app.get("/state", async (req, res) => {
+  try {
+    const st = await loadState();
+    if (!st) return res.status(404).json({ error: "state表没建" });
+    const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const hour = now.getHours() + now.getMinutes() / 60;
+    const d = st.drives || {}, disp = {};
+    for (const k of DRIVE_KEYS) disp[k] = clamp01((d[k] ?? 0) + circadianOffset(k, hour));
+    const { data: lastPush } = await supabase.from("messages")
+      .select("content, created_at").eq("is_push", true)
+      .order("created_at", { ascending: false }).limit(1);
+    res.json({
+      drives: d, display: disp, energy: Number(st.energy ?? 0.8),
+      refractory: st.refractory || {}, asleep: morenAsleep(now),
+      last_tick: st.last_tick, last_push: lastPush?.[0] || null
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+      
       // 她的脚印
       const { data: lastVArr } = await supabase.from("messages")
         .select("content, created_at").eq("sender", "琰琰")
