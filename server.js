@@ -693,12 +693,6 @@ async function compressIfNeeded(s) {
     { role: "user", content: text.slice(0, 30000) }
   ], 500, 0.3, false);
 
-  if (out.text && out.text.trim() !== "无") {
-    const lines = out.text.split("\n").map(x => x.trim()).filter(Boolean).slice(0, 3);
-    for (const line of lines) {
-      await supabase.from("memories").insert({ content: line, kind: "distilled" });
-    }
-  }
   await supabase.from("messages")
     .update({ compressed: true })
     .in("id", old.map(m => m.id));
@@ -710,23 +704,6 @@ app.post("/remember", async (req, res) => {
   if (!content) return res.status(400).json({ error: "内容不能为空" });
   await supabase.from("memories").insert({ content, kind: "manual" });
   res.json({ ok: true, saved: content });
-});
-
-// 导入旧记录（Vault页，DeepSeek蒸馏）
-app.post("/import", async (req, res) => {
-  try {
-    const text = req.body.text;
-    if (!text) return res.status(400).json({ error: "内容不能为空" });
-    const out = await callAI("deepseek/deepseek-chat", [
-      { role: "system", content: "你是记忆整理助手。用户会粘贴她和爱人墨染的历史聊天记录。提取值得长期记住的信息（重要事件、约定、喜好、纪念日、情感瞬间），每条一行，简洁中文陈述句，最多8条，不要编号不要解释。" },
-      { role: "user", content: text.slice(0, 30000) }
-    ], 800, 0.3, false);
-    const lines = (out.text || "").split("\n").map(x => x.trim()).filter(Boolean).slice(0, 8);
-    for (const line of lines) {
-      await supabase.from("memories").insert({ content: line, kind: "distilled" });
-    }
-    res.json({ ok: true, saved: lines });
-  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 查额度
