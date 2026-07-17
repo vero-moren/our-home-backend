@@ -51,6 +51,134 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking, too
   return { text: m.content || "", thinking: m.reasoning || "", tool_calls: m.tool_calls || null };
 }
 
+// ============ 批次八:Ombre 脑桥(读线) ============
+const OB_URL = String(process.env.OMBRE_DASHBOARD_URL || "").replace(/\/$/, "");
+const OB_PASS = process.env.OMBRE_DASHBOARD_PASSWORD || "";
+const OB_TIMEOUT = Number(process.env.OMBRE_DASHBOARD_TIMEOUT_MS || 8000);
+let obCookie = "", obLoginLock = null;
+let obCache = { at: 0, items: null };
+
+function obConfigured() { return Boolean(OB_URL && OB_PASS); }
+
+function obCapture(res) {
+  const raw = typeof res.headers.getSetCookie === "function"
+    ? res.headers.getSetCookie()
+    : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")] : []);
+  if (raw.length) obCookie = raw.map(v => String(v).split(";")[0]).join("; ");
+}
+
+async function obLogin() {
+  if (obLoginLock) return obLoginLock;
+  obLoginLock = (async () => {
+    const res = await fetch(OB_URL + "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: OB_PASS }),
+      signal: AbortSignal.timeout(OB_TIMEOUT)
+    });
+    obCapture(res);
+    if (!res.ok || !obCookie) { obCookie = ""; throw new Error("OB登录失败 " + res.status); }
+    return obCookie;
+  })().finally(() => { obLoginLock = null; });
+  return obLoginLock;
+}
+
+async function obReq(path, retried = false) {
+  if (!obConfigured()) throw new Error("OB未配置");
+  if (!obCookie) await obLogin();
+  const res = await fetch(OB_URL + path, {
+    headers: { Cookie: obCookie },
+    signal: AbortSignal.timeout(OB_TIMEOUT)
+  });
+  obCapture(res);
+  if (res.status === 401 && !retried) { obCookie = ""; return obReq(path, true); }
+  if (!res.ok) throw new Error("OB返回 " + res.status);
+  return res.json();
+}
+
+function obNorm(b = {}) {
+  const meta = b.meta || b.metadata || {};
+  const content = String(b.content || b.text || b.body || "");
+  return {
+    id: String(b.id || b.bucket_id || b.name || ""),
+    name: String(b.name || b.title || meta.name || ""),
+    content,
+    preview: String(b.content_preview || b.preview || content).replace(/\s+/g, " ").trim(),
+    type: String(b.type || meta.type || "dynamic"),
+    domains: [].concat(b.domains || b.domain || meta.domain || []).join(","),
+    importance: Number(b.importance ?? meta.importance ?? 5) || 5,
+    pinned: Boolean(b.pinned ?? meta.pinned),
+    createdAt: b.created_at || b.created || meta.created || null,
+    lastActiveAt: b.last_active_at || b.last_active || meta.last_active || null
+  };
+}
+
+async function obList() {
+  if (obCache.items && Date.now() - obCache.at < 60000) return obCache.items;
+  const data = await obReq("/api/buckets");
+  const raw = Array.isArray(data) ? data : data.buckets || data.items || [];
+  obCache = { at: Date.now(), items: raw.map(obNorm) };
+  return obCache.items;
+}
+
+async function obSearch(q) {
+  try {
+    const data = await obReq("/api/search?q=" + encodeURIComponent(q));
+    const raw = Array.isArray(data) ? data : data.results || data.items || data.buckets || [];
+    return raw.map(obNorm);
+  } catch {
+    const kw = String(q).replace(/[\s，。！？,.!?~*]/g, "").slice(0, 20);
+    return (await obList()).filter(m => kw && (m.content.includes(kw) || m.name.includes(kw)));
+  }
+}
+
+// 聊天注入用:底色(pinned/重要度≥9) + 相关(按她这句话检索),去重后每条截220字
+async function obMemoryText(userMsg) {
+  if (!obConfigured()) return "";
+  const all = await obList();
+  const base = all.filter(m => m.pinned || m.importance >= 9)
+    .sort((a, b) => b.importance - a.importance).slice(0, 8);
+  let rel = [];
+  const q = String(userMsg || "").slice(0, 80).trim();
+  if (q) { try { rel = (await obSearch(q)).slice(0, 6); } catch {} }
+  const seen = new Set(), lines = [];
+  for (const m of [...base, ...rel]) {
+    if (!m.id || seen.has(m.id)) continue;
+    seen.add(m.id);
+    lines.push("- " + (m.preview || m.content).slice(0, 220));
+  }
+  return lines.join("\n");
+}
+
+// —— 给未来 Vault 页用的代理路由 ——
+app.get("/ombre/status", async (req, res) => {
+  try {
+    const d = await obReq("/api/status");
+    res.json({ available: true, total: Number(d.buckets?.total ?? d.total ?? 0) });
+  } catch (e) { res.status(503).json({ available: false, error: e.message }); }
+});
+app.get("/ombre/buckets", async (req, res) => {
+  try {
+    const items = (await obList()).slice()
+      .sort((a, b) => new Date(b.lastActiveAt || b.createdAt || 0) - new Date(a.lastActiveAt || a.createdAt || 0));
+    res.json({ items, total: items.length });
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+app.get("/ombre/search", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim().slice(0, 160);
+    if (!q) return res.json({ items: [], total: 0 });
+    const items = await obSearch(q);
+    res.json({ items, total: items.length });
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+app.get("/ombre/buckets/:id", async (req, res) => {
+  try {
+    const d = await obReq("/api/bucket/" + encodeURIComponent(req.params.id));
+    res.json(obNorm(d.bucket || d));
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+
 // ============ 批次七a：他的手 ============
 const TOOLS = [
   { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
@@ -307,9 +435,13 @@ async function buildChatPayload(opts) {
   const s = await getSettings();
   const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : "anthropic/claude-sonnet-4.5";
 
-  const { data: memories } = await supabase.from("memories")
-    .select("content").order("created_at", { ascending: false }).limit(40);
-  const memoryText = (memories || []).reverse().map(m => "- " + m.content).join("\n");
+ let memoryText = "";
+  try { memoryText = await obMemoryText(opts.message); } catch (e) {}
+  if (!memoryText) {
+    const { data: memories } = await supabase.from("memories")
+      .select("content").order("created_at", { ascending: false }).limit(40);
+    memoryText = (memories || []).reverse().map(m => "- " + m.content).join("\n");
+  }
   const { data: momsC } = await supabase.from("moments")
     .select("content").order("created_at", { ascending: false }).limit(5);
   const momsCText = (momsC || []).map(m => "- " + m.content.replace(/\[img\][\s\S]*?\[\/img\]/, "[一张照片] ").slice(0, 100)).join("\n");
