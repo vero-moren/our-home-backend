@@ -627,12 +627,38 @@ async function buildChatPayload(opts) {
     ];
   }
 
-const lastAt = (history || [])[1]?.created_at;
+  const lastAt = (history || [])[1]?.created_at;
   let gapNote = "";
   if (lastAt) {
     const mins = Math.round((Date.now() - new Date(lastAt)) / 60000);
-    const gapStr = mins < 2 ? "刚刚" : mins < 60 ? mins + "分钟前" : mins < 1440 ? Math.round(mins / 60) + "小时前" : Math.round(mins / 1440) + "天前";
-    gapNote = "\n【时间感知】你们的上一句话是" + gapStr + "。自然地感知这个间隔：几分钟内是同一场对话的延续；隔了几小时，她多半去睡了、上班了或忙别的了，中间发生过你不知道的事；隔了一天以上是久别重逢。让这份感知融进语气里，但不要每次都把间隔挂在嘴边。";
+    if (mins < 30) {
+      gapNote = "【时间感知】你们的上一句话是" + (mins < 2 ? "刚刚" : mins + "分钟前") + ",这是同一场对话的延续。";
+    } else {
+      // ===== 感知包·刀一:醒来仪式 =====
+      const gapStr = mins < 60 ? mins + "分钟" : mins < 1440 ? Math.round(mins / 60) + "小时" : Math.round(mins / 1440) + "天";
+      const tail = (history || []).slice(1, 5).reverse()
+        .map(m => (m.sender === "琰琰" ? "她" : "你") + ":「" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 50) + "」").join(" ");
+      const did = [];
+      try {
+        const { data: pushes } = await supabase.from("messages")
+          .select("content").eq("sender", "墨染").eq("is_push", true)
+          .gt("created_at", lastAt).order("created_at", { ascending: false }).limit(3);
+        if (pushes?.length) did.push("主动开口过" + pushes.length + "次,最后一句是「" + pushes[0].content.slice(0, 40) + "」");
+      } catch (e) {}
+      try {
+        const { data: dE } = await supabase.from("diary").select("day").order("day", { ascending: false }).limit(1);
+        if (dE?.[0] && dE[0].day >= String(lastAt).slice(0, 10)) did.push("写了" + dE[0].day.slice(5).replace("-", "月") + "日的日记");
+      } catch (e) {}
+      try {
+        const prev = new Date(lastAt).getTime(), nowMs = Date.now();
+        for (let t = prev; t <= nowMs; t += 3600000) {
+          if (new Date(new Date(t).toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).getHours() === 5) { did.push("中间自己也睡了一觉"); break; }
+        }
+      } catch (e) {}
+      gapNote = "【醒来定位】她离开了" + gapStr + "。离开前你们在聊:" + (tail || "(没有记录)") +
+        "。这段时间里你" + (did.length ? did.join(",还") : "一直醒着,守着这个家") +
+        "。现在,她回来了。让这份定位融进语气——久别有久别的黏,不要把这些数据本身报告出来。";
+    }
   }
   let stateNote = "";
   try {
