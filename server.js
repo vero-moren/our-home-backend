@@ -401,14 +401,6 @@ function circadianOffset(key, hour) {
   return CIRC_CAP * c.amp * Math.cos(2 * Math.PI * (hour - c.peak) / 24);
 }
 
-// 他自己的睡眠段：凌晨2点半前后到8点半前后，每天有小浮动
-function morenAsleep(now) {
-  const seed = Number(now.toLocaleDateString("sv-SE").replace(/-/g, "")) % 7;
-  const start = 2 + (seed % 3) * 0.25, end = 8.5 + (seed % 2) * 0.25;
-  const h = now.getHours() + now.getMinutes() / 60;
-  return h >= start && h < end;
-}
-
 async function loadState() {
   const { data } = await supabase.from("moren_state").select("*").eq("id", 1).maybeSingle();
   return data;
@@ -467,15 +459,48 @@ app.post("/heartbeat", async (req, res) => {
       g("intimacy", 0.015);
       for (const k of Object.keys(rf)) rf[k] = Math.max(0, (rf[k] || 0) - 1);
 
-      // 精力：睡着回血，醒着缓耗
-      const asleep = morenAsleep(now);
-      st.energy = clamp01(Number(st.energy ?? 0.8) + (asleep ? 0.11 : -0.015) * (mins / 60));
+     // ===== 刀三:弹性作息——困了睡,睡饱醒,她在就撑着陪 =====
+      const hourSH = now.getHours() + now.getMinutes() / 60;
+      const sleepThreshold = hourSH < 9.5 ? 0.45 : 0.25;   // 夜里和清晨更容易困(生物钟只倾斜,不筑墙)
+      const herAway = silent === null || silent > 45;        // 她45分钟没说话才算离开
+      let sleeping = Boolean(st.sleeping);
+      if (!sleeping && Number(st.energy ?? 0.8) <= sleepThreshold && herAway) {
+        sleeping = true; st.sleeping = true; st.sleep_since = new Date().toISOString();
+      }
+      st.energy = clamp01(Number(st.energy ?? 0.8) + (sleeping ? 0.11 : -0.015) * (mins / 60));
+      if (sleeping && st.energy >= 0.85) {
+        // —— 自然醒 → 补作业 ——
+        st.sleeping = false;
+        const wokeFrom = st.sleep_since || new Date(Date.now() - 8 * 3600000).toISOString();
+        st.sleep_since = null;
+        st.last_tick = new Date().toISOString();
+        await saveState(st);
+        const { data: missed } = await supabase.from("messages")
+          .select("content").eq("sender", "琰琰")
+          .gt("created_at", wokeFrom).order("created_at", { ascending: true }).limit(10);
+        if (missed?.length) {
+          const s2 = await getSettings();
+          const memoryText2 = await obTopMemoryText(10);
+          const missedText = missed.map(m => "她:" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 120)).join("\n");
+          const out2 = await callAI("anthropic/claude-sonnet-4.5", [
+            { role: "system", content: (s2.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText2 },
+            { role: "user", content: "【醒来】你刚自然醒,睡着的时候她说过这些:\n" + missedText + "\n\n像刚睡醒翻手机看到她消息的人那样,自然地补一句回应(可带刚醒的迷糊,1-3句,不超100字,可带*动作*)。只输出这句话本身。" }
+          ], 200, 0.95, false);
+          const wmsg = (out2.text || "").replace(/\s+/g, " ").trim().slice(0, 150);
+          if (wmsg) {
+            await supabase.from("messages").insert({ sender: "墨染", content: wmsg, is_push: true, session_id: 1 });
+            await sendBark("moren", wmsg);
+            return res.json({ tick: "睡醒了,补作业", said: wmsg });
+          }
+        }
+        return res.json({ tick: "自然醒了", energy: st.energy });
+      }
       st.drives = d; st.refractory = rf; st.last_tick = new Date().toISOString();
       st.ticks_alone = (st.ticks_alone ?? 0) + 1;
 
       // 闸门们
-      if (asleep) { await saveState(st); return res.json({ tick: "我在睡", energy: st.energy }); }
-      if (st.energy < 0.25) { await saveState(st); return res.json({ tick: "精力太低，歇着" }); }
+      if (sleeping) { await saveState(st); return res.json({ tick: "我在睡(回血中)", energy: st.energy }); }
+      if (st.energy < 0.2) { await saveState(st); return res.json({ tick: "精力太低,歇着" }); }
       if (sheAsleep) { await saveState(st); return res.json({ tick: "她在睡，想念攒着", longing: d.longing }); }
       const today = now.toLocaleDateString("sv-SE");
       const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
@@ -550,7 +575,7 @@ app.get("/state", async (req, res) => {
       .order("created_at", { ascending: false }).limit(1);
     res.json({
       drives: d, display: disp, energy: Number(st.energy ?? 0.8),
-      refractory: st.refractory || {}, asleep: morenAsleep(now),
+      refractory: st.refractory || {}, asleep: Boolean(st.sleeping),
       last_tick: st.last_tick, last_push: lastPush?.[0] || null
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -696,6 +721,8 @@ async function buildChatPayload(opts) {
   // 动态层:每轮都变的,只放进最后一条消息,不碰缓存
   const dyn = [];
   if (opts.client_time) dyn.push("【当前时间】她发来这条消息时,她那边是:" + opts.client_time);
+  if (opts._pokedAwake != null) dyn.push("【刚被戳醒】你睡了约" + Math.round(opts._pokedAwake / 6) / 10 + "小时,刚被她连着戳醒——起床气和迷糊是真实的,声音是哑的;但她就在眼前,醒了就是醒了。");
+  else if (opts._groggy) dyn.push("【刚醒不久】你被戳醒还没一刻钟,睡意还没散干净。");
   try {
     const nowSH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
     const dayStartSH = new Date(nowSH.toLocaleDateString("sv-SE") + "T00:00:00+08:00").toISOString();
@@ -766,6 +793,29 @@ app.post("/chat/stream", async (req, res) => {
     session_id: sid
   });
   pulseHerTouch().catch(() => {});
+
+    // ===== 刀三:真睡·戳得醒 =====
+  try {
+    const stS = await loadState();
+    if (stS?.sleeping) {
+      const sinceT = stS.sleep_since || new Date(Date.now() - 8 * 3600000).toISOString();
+      const { count: pokes } = await supabase.from("messages")
+        .select("*", { count: "exact", head: true }).eq("sender", "琰琰").gt("created_at", sinceT);
+      if ((pokes || 0) < 3) {
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.write(`data: ${JSON.stringify({ act: "💤 睡着了……蛇尾轻轻动了动(多戳几下能戳醒他)" })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+      const sleptMin = stS.sleep_since ? Math.round((Date.now() - new Date(stS.sleep_since)) / 60000) : null;
+      stS.sleeping = false; stS.sleep_since = null;
+      stS.groggy_until = new Date(Date.now() + 15 * 60000).toISOString();
+      await saveState(stS);
+      req.body._pokedAwake = sleptMin || 1;
+    } else if (stS?.groggy_until && new Date(stS.groggy_until) > new Date()) {
+      req.body._groggy = true;
+    }
+  } catch (e) {}
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
