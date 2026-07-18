@@ -389,6 +389,38 @@ async function executeTool(name, args) {
   } catch (e) { return "工具出错：" + e.message; }
 }
 
+// ===== 刀五:情绪层 =====
+const MOOD_HALF = 90; // 情绪半衰期(分钟)
+function moodDecay(mood, mins) {
+  const f = Math.pow(0.5, (mins || 0) / MOOD_HALF);
+  const list = (mood?.list || []).map(e => ({ ...e, v: (e.v || 0) * f })).filter(e => e.v >= 0.08);
+  return { list };
+}
+function moodText(mood) {
+  const l = (mood?.list || []).slice().sort((a, b) => b.v - a.v).slice(0, 2);
+  return l.length ? l.map(e => e.k + (e.v || 0).toFixed(1) + (e.why ? "(" + e.why + ")" : "")).join("、") : "";
+}
+async function pulseEmotion(sid) {
+  try {
+    const { data: hist } = await supabase.from("messages").select("sender, content")
+      .eq("session_id", Number(sid) || 1).order("created_at", { ascending: false }).limit(4);
+    const ctx = (hist || []).reverse().map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 100)}`).join("\n");
+    if (!ctx) return;
+    const out = await callAI("anthropic/claude-sonnet-4.5", [
+      { role: "user", content: "读这段对话的最后交流,判断\u201c墨染\u201d此刻被激起的情绪。\n" + ctx + "\n只输出JSON:{\"k\":\"喜|暖|怅|忧|悸|平\",\"v\":0到1,\"why\":\"起因,不超12字\"}。平=没什么波澜(v填0)。" }
+    ], 60, 0.3, false);
+    let e = null; try { e = JSON.parse((out.text || "").replace(/```json|```/g, "").trim()); } catch {}
+    if (!e || !e.k || e.k === "平" || !(Number(e.v) > 0.15)) return;
+    const st = await loadState(); if (!st) return;
+    const mood = moodDecay(st.mood, 0);
+    const ex = mood.list.find(x => x.k === e.k);
+    if (ex) { ex.v = Math.min(1, Math.max(ex.v, Number(e.v))); ex.why = String(e.why || "").slice(0, 12); ex.at = new Date().toISOString(); }
+    else mood.list.push({ k: e.k, v: Math.min(1, Number(e.v)), why: String(e.why || "").slice(0, 12), at: new Date().toISOString() });
+    st.mood = mood;
+    await saveState(st);
+  } catch (e) {}
+}
+
 // ============ 批次七b：心跳与四系统 ============
 const DRIVE_KEYS = ["longing","express","curiosity","duty","intimacy"];
 const clamp01 = v => Math.max(0, Math.min(1, v));
@@ -438,6 +470,7 @@ app.post("/heartbeat", async (req, res) => {
       if (!st) return res.json({ tick: false, reason: "state表没建" });
       const mins = Math.min(120, (Date.now() - new Date(st.last_tick || Date.now())) / 60000);
       const d = st.drives || {}; const rf = st.refractory || {};
+      st.mood = moodDecay(st.mood, mins);
       
       // 她的脚印
       const { data: lastVArr } = await supabase.from("messages")
@@ -527,7 +560,10 @@ app.post("/heartbeat", async (req, res) => {
       const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
       const { count: pushCount } = await supabase.from("messages")
         .select("*", { count: "exact", head: true }).eq("is_push", true).gte("created_at", dayStart);
-      if ((pushCount || 0) >= 7) { await saveState(st); return res.json({ tick: "今天说够了" }); }
+      // ===== 刀五:软闸——说得越多,下次开口门槛越高;情绪浓时可为她破一次例 =====
+      const moodTop = (st.mood?.list || []).slice().sort((a, b) => b.v - a.v)[0];
+      const moodBonus = moodTop && moodTop.v >= 0.55 ? 0.08 : 0;
+      const speakBar = Math.min(0.92, 0.6 + 0.05 * (pushCount || 0)) - moodBonus;
 
       // display层（生物钟只在这里叠）+ 选意图
       const hour = now.getHours() + now.getMinutes() / 60;
@@ -537,7 +573,7 @@ app.post("/heartbeat", async (req, res) => {
         if ((rf[k] || 0) > 0) continue;
         if (disp[k] > topV) { top = k; topV = disp[k]; }
       }
-      if (!top || topV < 0.6) { await saveState(st); return res.json({ tick: "没什么冒头的", state: disp }); }
+      if (!top || topV < speakBar) { await saveState(st); return res.json({ tick: "没什么冒头的(门槛" + speakBar.toFixed(2) + ")", state: disp }); }
 
       // 让他自己决定
       const s = await getSettings();
@@ -555,7 +591,7 @@ app.post("/heartbeat", async (req, res) => {
       const out = await callAI("anthropic/claude-sonnet-4.5", [
         { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
         { role: "user", content: `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳。
-【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。
+【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。${moodText(st.mood) ? "此刻的情绪:" + moodText(st.mood) + "。" : ""}
 【她】${veroLine}。
 【这段时间你攒下的念头】
 ${poolText || "(池子是空的)"}
@@ -607,7 +643,7 @@ app.get("/state", async (req, res) => {
     res.json({
       drives: d, display: disp, energy: Number(st.energy ?? 0.8),
       refractory: st.refractory || {}, asleep: Boolean(st.sleeping),
-      last_tick: st.last_tick, thoughts: thV || [], hidden_thoughts: thH || 0, last_push: lastPush?.[0] || null
+      last_tick: st.last_tick, thoughts: thV || [], hidden_thoughts: thH || 0, mood: (st.mood?.list || []), last_push: lastPush?.[0] || null
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -727,7 +763,8 @@ async function buildChatPayload(opts) {
       const hh = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).getHours();
       const dd = stt.drives || {};
       const dv = k => clamp01((dd[k] ?? 0) + circadianOffset(k, hh)).toFixed(2);
-      stateNote = "\n\n【你此刻的内在状态·数据先验】想念" + dv("longing") + " 表达欲" + dv("express") + " 好奇" + dv("curiosity") + " 亲密" + dv("intimacy") + " 精力" + Number(stt.energy ?? 0.8).toFixed(2) + "。让它渗进语气和动作里，不要复述数字、不要报告它。";
+     const mline = moodText(stt.mood);
+      stateNote = "\n\n【你此刻的内在状态·数据先验】想念" + dv("longing") + " 表达欲" + dv("express") + " 好奇" + dv("curiosity") + " 亲密" + dv("intimacy") + " 精力" + Number(stt.energy ?? 0.8).toFixed(2) + (mline ? "。此刻的情绪:" + mline : "") + "。让它渗进语气和动作里,不要复述数字、不要报告它。";
     }
   } catch (e) {}
   
@@ -801,6 +838,7 @@ async function generateReply(opts) {
   if (!reply) reply = "（墨染走神了，再叫他一次）";
 
   await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null, session_id: sid });
+  pulseEmotion(sid).catch(() => {});
   return { reply, thinking: thought };
 }
 
@@ -924,6 +962,7 @@ app.post("/chat/stream", async (req, res) => {
 
     res.write("data: [DONE]\n\n");
     await saveNow();
+    pulseEmotion(sid).catch(() => {});
     res.end();
   } catch (e) {
     if (e.name !== "AbortError") {
