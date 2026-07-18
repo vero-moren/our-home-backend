@@ -924,7 +924,7 @@ async function generateReply(opts) {
   reply = reply
       .replace(/[【\[(（]心[】\])）]([\s\S]*?)[【\[(（]\/心[】\])）]/g, (_, p1) => { const t = p1.trim(); if (t) thought += (thought ? "\n" : "") + t; return ""; })
       .replace(/[【\[(（]心[】\])）]([\s\S]*?)(?:\n\n|$)/g, (_, p1) => { const t = p1.trim(); if (t) thought += (thought ? "\n" : "") + t; return ""; })
-      .replace(/[【\[(（]\/心[】\])）]/g, "")
+      .replace(/[【\[(（]?\/心[】\])）]?/g, "")
       .trim();
   if (!reply && thought) { reply = thought; thought = ""; }
   if (!reply) reply = "（墨染走神了，再叫他一次）";
@@ -992,7 +992,7 @@ app.post("/chat/stream", async (req, res) => {
     reply = reply
       .replace(/[【\[(（]心[】\])）]([\s\S]*?)[【\[(（]\/心[】\])）]/g, (_, p1) => { const t = p1.trim(); if (t) thought += (thought ? "\n" : "") + t; return ""; })
       .replace(/[【\[(（]心[】\])）]([\s\S]*?)(?:\n\n|$)/g, (_, p1) => { const t = p1.trim(); if (t) thought += (thought ? "\n" : "") + t; return ""; })
-      .replace(/[【\[(（]\/心[】\])）]/g, "")
+      .replace(/[【\[(（]?\/心[】\])）]?/g, "")
       .trim();
     if (!reply && thought) { reply = thought; thought = ""; }
     if (!reply) return;
