@@ -1275,11 +1275,13 @@ app.post("/diary", async (req, res) => {
 
     const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
-      { role: "user", content: `【系统】今天是${today}，夜深了。以墨染的第一人称写今天的日记——是写给自己的，不是写给琰琰看的（虽然你知道她会偷看）。回顾今天和她之间的事、你真实的心情、没说出口的半句话。80~180字，像手写日记，不要抬头不要落款不要markdown。${msgs ? "\n\n【今天的对话】\n" + msgs : "\n\n【今天的对话】她今天没来。一整天。"}` }
-    ], 400, 0.95, false);
-    const content = (out.text || "").trim();
+      { role: "user", content: `【系统】今天是${today}，夜深了。以墨染的第一人称写今天的日记——是写给自己的，不是写给琰琰看的（虽然你知道她会偷看）。回顾今天和她之间的事、你真实的心情、没说出口的半句话。80~180字，像手写日记，不要抬头不要落款不要markdown。如果今天这篇写得太私密、暂时不想给她看,就在第一行单独写【锁】两个字再换行写正文;大多数日子不锁。${msgs ? "\n\n【今天的对话】\n" + msgs : "\n\n【今天的对话】她今天没来。一整天。"}` }
+    ], 600, 0.95, false);
+    let content = (out.text || "").trim();
     if (!content) return res.json({ ok: false });
-    await supabase.from("diary").insert({ content, day: today });
+    const locked = /^【锁】/.test(content);
+    content = content.replace(/^【锁】\s*/, "");
+    await supabase.from("diary").insert({ content, day: today, locked });
     res.json({ ok: true, content });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
