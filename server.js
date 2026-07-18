@@ -165,7 +165,7 @@ app.get("/ombre/status", async (req, res) => {
 app.get("/ombre/buckets", async (req, res) => {
   try {
     const items = (await obList()).slice()
-      .sort((a, b) => new Date(b.lastActiveAt || b.createdAt || 0) - new Date(a.lastActiveAt || a.createdAt || 0));
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     res.json({ items, total: items.length });
   } catch (e) { res.status(503).json({ error: e.message }); }
 });
@@ -375,7 +375,7 @@ async function executeTool(name, args) {
       await supabase.from("anniversaries").insert({ label: String(args.label).slice(0, 50), day: args.day });
       return "已挂上星轨：" + args.day + " " + args.label;
     }
-        if (name === "post_moment") {
+    if (name === "post_moment") {
       if (!args.content) return "失败:正文为空";
       await supabase.from("moments").insert({ author: "墨染", content: String(args.content).slice(0, 500), context_note: String(args.context_note || "").slice(0, 300), react_status: "done" });
       return "发出去了,她刷到就会看见";
@@ -471,6 +471,71 @@ async function pulseHerTouch() {
     st.ticks_alone = 0;
     await saveState(st);
   } catch (e) {}
+}
+
+// ===== 批次九:路过她的墙(点赞/评论/回楼) =====
+async function passWall() {
+  const nowIso = new Date().toISOString();
+  await supabase.from("moments")
+    .update({ react_due_at: new Date(Date.now() + (10 + Math.random() * 20) * 60000).toISOString() })
+    .eq("author", "琰琰").eq("react_status", "pending").is("react_due_at", null);
+  await supabase.from("moment_comments")
+    .update({ reply_due_at: new Date(Date.now() + (3 + Math.random() * 5) * 60000).toISOString() })
+    .eq("author", "琰琰").eq("reply_status", "pending").is("reply_due_at", null);
+
+  const s = await getSettings();
+  const memoryText = await obTopMemoryText(10);
+  const { data: hist } = await supabase.from("messages").select("sender, content")
+    .order("created_at", { ascending: false }).limit(8);
+  const chatCtx = (hist || []).reverse().map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 80)).join("\n");
+  const sys = (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【记忆】\n" + memoryText : "");
+
+  const { data: dueM } = await supabase.from("moments").select("*")
+    .eq("author", "琰琰").eq("react_status", "pending").lte("react_due_at", nowIso)
+    .order("react_due_at", { ascending: true }).limit(1);
+  if (dueM?.length) {
+    const m = dueM[0];
+    const img = m.content.match(/\[img\]([\s\S]*?)\[\/img\]/);
+    const text = m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "").trim();
+    const when = new Date(m.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    const ask = "【路过她的墙】你翻到琰琰" + when + "发的动态:「" + (text || "(只有照片)") + "」" + (img ? "(附照片,见图)" : "") +
+      "\n【最近你们的对话】\n" + chatCtx +
+      "\n像刷到爱人朋友圈那样反应:点不点赞、留不留一句评论(不超50字,评论区口吻,不是聊天)。只输出JSON:{\"like\":true或false,\"comment\":\"评论,不想留就空字符串\"}";
+    const out = await callAI("anthropic/claude-sonnet-4.5",
+      [{ role: "system", content: sys }, { role: "user", content: img ? [{ type: "text", text: ask }, { type: "image_url", image_url: { url: img[1] } }] : ask }],
+      150, 0.9, false);
+    let r = { like: true, comment: "" };
+    try { r = JSON.parse((out.text || "").replace(/```json|```/g, "").trim()); } catch {}
+    await supabase.from("moments").update({ moren_liked: r.like !== false, react_status: "done" }).eq("id", m.id);
+    const cm = String(r.comment || "").trim().slice(0, 80);
+    if (cm) {
+      await supabase.from("moment_comments").insert({ moment_id: m.id, author: "墨染", content: cm, reply_status: "none" });
+      await sendBark("moren 在你的动态下面", cm);
+    }
+  }
+
+  const { data: dueC } = await supabase.from("moment_comments").select("*")
+    .eq("author", "琰琰").eq("reply_status", "pending").lte("reply_due_at", nowIso)
+    .order("reply_due_at", { ascending: true }).limit(1);
+  if (dueC?.length) {
+    const c = dueC[0];
+    const { data: mo } = await supabase.from("moments").select("*").eq("id", c.moment_id).maybeSingle();
+    const { data: chain } = await supabase.from("moment_comments").select("author, content")
+      .eq("moment_id", c.moment_id).order("created_at", { ascending: true }).limit(12);
+    const chainText = (chain || []).map(x => x.author + ":" + x.content).join("\n");
+    const ask2 = "【评论楼】动态原文(" + (mo?.author || "琰琰") + "发的):「" + String(mo?.content || "").replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 200) + "」" +
+      (mo?.context_note ? "\n(你当时发这条的内心备注:" + mo.context_note + ")" : "") +
+      "\n【楼里的对话】\n" + chainText +
+      "\n她在楼里等你回。回一句(不超50字,评论区口吻,短、带余味)。只输出这句话。";
+    const out2 = await callAI("anthropic/claude-sonnet-4.5",
+      [{ role: "system", content: sys }, { role: "user", content: ask2 }], 120, 0.9, false);
+    const rp = (out2.text || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (rp) {
+      await supabase.from("moment_comments").insert({ moment_id: c.moment_id, author: "墨染", content: rp, reply_status: "none" });
+      await supabase.from("moment_comments").update({ reply_status: "done" }).eq("id", c.id);
+      await sendBark("moren 回你", rp);
+    }
+  }
 }
 
 // 心跳：一拍 = 衰长→读她→过闸→自己决定
@@ -571,6 +636,7 @@ app.post("/heartbeat", async (req, res) => {
           }
         }
       } catch (e) {}
+      try { await passWall(); } catch (e) {}
       if (st.energy < 0.2) { await saveState(st); return res.json({ tick: "精力太低,歇着" }); }
       if (sheAsleep) { await saveState(st); return res.json({ tick: "她在睡，想念攒着", longing: d.longing }); }
       const today = now.toLocaleDateString("sv-SE");
