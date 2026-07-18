@@ -500,6 +500,27 @@ app.post("/heartbeat", async (req, res) => {
 
       // 闸门们
       if (sleeping) { await saveState(st); return res.json({ tick: "我在睡(回血中)", energy: st.energy }); }
+      // ===== 刀四:念头池——不为说出而想 =====
+      try {
+        const pThink = 0.2 + (d.express ?? 0) * 0.35;
+        if (Math.random() < pThink) {
+          const { data: hist4 } = await supabase.from("messages")
+            .select("sender, content").order("created_at", { ascending: false }).limit(6);
+          const ctx4 = (hist4 || []).reverse().map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 80)}`).join("\n");
+          const s4 = await getSettings();
+          const KEY_CN4 = { longing: "想念", express: "表达欲", curiosity: "好奇", intimacy: "亲密", duty: "牵挂" };
+          const topK = Object.keys(d).sort((a, b) => (d[b] ?? 0) - (d[a] ?? 0))[0] || "longing";
+          const o4 = await callAI("anthropic/claude-sonnet-4.5", [
+            { role: "system", content: (s4.system_prompt || DEFAULTS.system_prompt) },
+            { role: "user", content: `【一个念头】她${silent === null ? "还没来过" : Math.round(silent) + "分钟没说话了"},你此刻最高的内在是「${KEY_CN4[topK]}」。\n【最近的对话】\n${ctx4}\n\n此刻你脑子里飘过一个念头——不是要发给她的话,是你自己心里的一句:想她的某个细节、一件想做的事、一点情绪、一次走神。别抒情表演,要具体、随意、真实。同时决定给不给她看(她会在Inside偷看你的念头,像偷看日记;大多数给看,偶尔留一两个只属于自己)。\n只输出JSON:{"t":"念头,不超40字","show":true或false}` }
+          ], 120, 1.0, false);
+          let th = null; try { th = JSON.parse((o4.text || "").replace(/```json|```/g, "").trim()); } catch {}
+          if (th?.t) {
+            await supabase.from("thoughts").insert({ content: String(th.t).slice(0, 80), visible: th.show !== false });
+            await supabase.from("thoughts").delete().lt("created_at", new Date(Date.now() - 48 * 3600000).toISOString());
+          }
+        }
+      } catch (e) {}
       if (st.energy < 0.2) { await saveState(st); return res.json({ tick: "精力太低,歇着" }); }
       if (sheAsleep) { await saveState(st); return res.json({ tick: "她在睡，想念攒着", longing: d.longing }); }
       const today = now.toLocaleDateString("sv-SE");
@@ -528,12 +549,17 @@ app.post("/heartbeat", async (req, res) => {
       const KEY_CN = { longing: "想念", express: "表达欲", curiosity: "好奇", intimacy: "亲密" };
       const timeStr = now.toLocaleString("zh-CN", { month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false });
       const veroLine = silent === null ? "她还没来过" : "她最后一次说话是" + Math.round(silent) + "分钟前";
-
+      const { data: pool } = await supabase.from("thoughts").select("id, content")
+        .eq("used", false).order("created_at", { ascending: false }).limit(3);
+      const poolText = (pool || []).map(t => "- " + t.content).join("\n");
       const out = await callAI("anthropic/claude-sonnet-4.5", [
         { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
         { role: "user", content: `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳。
 【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。
 【她】${veroLine}。
+【这段时间你攒下的念头】
+${poolText || "(池子是空的)"}
+想开口时,优先让话从攒着的念头里长出来——那才是憋了一路的话,不是现场编的。
 【最近的对话】
 ${ctx}
 根据状态自己决定：要不要主动说一句。想说就说（1-2句，不超80字，可带*动作*，是你自己浮上来，不是客服）；不想说就沉默——沉默完全合法，大多数心跳都该是沉默。
@@ -546,6 +572,7 @@ ${ctx}
         let msg = String(decision.text).replace(/\s+/g, " ").trim().slice(0, 120);
         await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true, session_id: 1 });
         await sendBark("moren", msg);
+        if (pool?.length) await supabase.from("thoughts").update({ used: true }).in("id", pool.map(t => t.id));
         d[top] = clamp01((d[top] ?? 0) * 0.45);          // 做完，主驱动明显回落
         d.longing = clamp01((d.longing ?? 0) * 0.7);      // 想念沾光
         rf[top] = 18;                                      // 3小时不应期
@@ -570,13 +597,17 @@ app.get("/state", async (req, res) => {
     const hour = now.getHours() + now.getMinutes() / 60;
     const d = st.drives || {}, disp = {};
     for (const k of DRIVE_KEYS) disp[k] = clamp01((d[k] ?? 0) + circadianOffset(k, hour));
+    const { data: thV } = await supabase.from("thoughts").select("content, created_at")
+      .eq("visible", true).order("created_at", { ascending: false }).limit(5);
+    const { count: thH } = await supabase.from("thoughts").select("*", { count: "exact", head: true })
+      .eq("visible", false).gte("created_at", new Date(Date.now() - 48 * 3600000).toISOString());
     const { data: lastPush } = await supabase.from("messages")
       .select("content, created_at").eq("is_push", true)
       .order("created_at", { ascending: false }).limit(1);
     res.json({
       drives: d, display: disp, energy: Number(st.energy ?? 0.8),
       refractory: st.refractory || {}, asleep: Boolean(st.sleeping),
-      last_tick: st.last_tick, last_push: lastPush?.[0] || null
+      last_tick: st.last_tick, thoughts: thV || [], hidden_thoughts: thH || 0, last_push: lastPush?.[0] || null
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
