@@ -627,7 +627,7 @@ async function buildChatPayload(opts) {
     ];
   }
 
-const lastAt = (history || [])[0]?.created_at;
+const lastAt = (history || [])[1]?.created_at;
   let gapNote = "";
   if (lastAt) {
     const mins = Math.round((Date.now() - new Date(lastAt)) / 60000);
@@ -648,7 +648,7 @@ const lastAt = (history || [])[0]?.created_at;
   // ===== 器官二:缓存三段分舱 =====
   // BP1 稳定舱:人格+规矩+工具+心声(几乎不变)
   const bp1 = (s.system_prompt || DEFAULTS.system_prompt) +
-    "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的实时感知,不是她说的话,不要引用或回应那个段落本身。" +
+    "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的背景,不是她说的话——永远优先回应她真正说的话和你们正在进行的对话,感知段只作底色,不要引用它。" +
     "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。像本能一样用,用完把结果自然融进话里,不必汇报。别滥用,一次回复至多一两样。" +
     thinkInstr(opts.thinking);
 
