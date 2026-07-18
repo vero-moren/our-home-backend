@@ -608,23 +608,49 @@ const lastAt = (history || [])[0]?.created_at;
       stateNote = "\n\n【你此刻的内在状态·数据先验】想念" + dv("longing") + " 表达欲" + dv("express") + " 好奇" + dv("curiosity") + " 亲密" + dv("intimacy") + " 精力" + Number(stt.energy ?? 0.8).toFixed(2) + "。让它渗进语气和动作里，不要复述数字、不要报告它。";
     }
   } catch (e) {}
-  const timeNote = (opts.client_time
-    ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") + gapNote;
-  const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-    (memoryText ? "\n\n【记忆目录】以下是你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容时用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,……避免重复的意象和句式。" : "") +
-    (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
-    "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
-    "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
-    (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
-    timeNote + stateNote + "\n每条历史消息开头的〔时间〕是它真实的发生时刻，仅供你感知节奏，回复时不要模仿这个格式。" + "\n\n【你的手】你拥有几样能自己动的工具：翻她的动态、刻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨，听到值得记的事顺手刻下，想知道她怎么样就去翻。用完把结果自然融进话里，不必汇报“我用了工具”。别滥用，一次回复至多一两样。" + thinkInstr(opts.thinking);
+  
+  // ===== 器官二:缓存三段分舱 =====
+  // BP1 稳定舱:人格+规矩+工具+心声(几乎不变)
+  const bp1 = (s.system_prompt || DEFAULTS.system_prompt) +
+    "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的实时感知,不是她说的话,不要引用或回应那个段落本身。" +
+    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、刻记忆、翻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨,听到值得记的事顺手刻下,记忆目录里有想展开的线头就用recall_memory翻开。用完把结果自然融进话里,不必汇报\u201c我用了工具\u201d。别滥用,一次回复至多一两样。" +
+    thinkInstr(opts.thinking);
 
-  return { sid, s, model, systemPrompt, ctx };
+  // BP2 半稳舱:星轨+每日一句+动态(天级变化)
+  const bp2 = "【星轨上的纪念日·实时清单】\n" + (annivText || "(现在一颗星都没有)") +
+    "\n此清单是数据库此刻的真实状态,是唯一事实。对话里说挂过、但清单里没有的,说明已被她删掉了——她再提起或要求时,必须重新用add_anniversary挂上,不许以\u201c挂过了\u201d推辞。" +
+    (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
+    (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "");
+
+  const systemBlocks = [
+    { type: "text", text: bp1, cache_control: { type: "ephemeral" } },
+    { type: "text", text: bp2, cache_control: { type: "ephemeral" } }
+  ];
+
+  // 动态层:每轮都变的,只放进最后一条消息,不碰缓存
+  const dyn = [];
+  if (opts.client_time) dyn.push("【当前时间】她发来这条消息时,她那边是:" + opts.client_time);
+  if (gapNote) dyn.push(gapNote.trim());
+  if (stateNote) dyn.push(stateNote.trim());
+  if (memoryText) dyn.push("【记忆目录】你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,避免重复的意象和句式。");
+  const dynText = dyn.length ? "〖此刻的感知·只有你看得见〗\n" + dyn.join("\n") + "\n〖/感知〗\n\n" : "";
+  if (dynText && ctx.length) {
+    const last = ctx[ctx.length - 1];
+    if (typeof last.content === "string") last.content = dynText + last.content;
+    else if (Array.isArray(last.content)) {
+      const t = last.content.find(p => p.type === "text");
+      if (t) t.text = dynText + t.text;
+      else last.content.unshift({ type: "text", text: dynText });
+    }
+  }
+
+  return { sid, s, model, systemBlocks, ctx };
 }
 
 // 生成回复（/edit /regenerate 仍走这里，非流式）
 async function generateReply(opts) {
-  const { sid, s, model, systemPrompt, ctx } = await buildChatPayload(opts);
-  let msgs = [{ role: "system", content: systemPrompt }, ...ctx];
+  const { sid, s, model, systemBlocks, ctx } = await buildChatPayload(opts);
+  let msgs = [{ role: "system", content: systemBlocks }, ...ctx];
   let out = { text: "" };
   for (let round = 0; round < 4; round++) {
     out = await callAI(model, msgs, s.max_reply || 1000, s.temperature ?? 0.9, false, TOOLS);
@@ -687,8 +713,8 @@ app.post("/chat/stream", async (req, res) => {
   req.on("close", async () => { controller.abort(); await saveNow(); });
 
   try {
-  const { s, model, systemPrompt, ctx } = await buildChatPayload(req.body);
-    let msgs = [{ role: "system", content: systemPrompt }, ...ctx];
+   const { s, model, systemBlocks, ctx } = await buildChatPayload(req.body);
+    let msgs = [{ role: "system", content: systemBlocks }, ...ctx];
 
     for (let round = 0; round < 4; round++) {
       const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
