@@ -427,6 +427,7 @@ async function pulseHerTouch() {
     d.express = clamp01((d.express ?? 0) + 0.10 * Math.sqrt(1 - (d.express ?? 0)));
     d.intimacy = clamp01((d.intimacy ?? 0) + 0.08 * Math.sqrt(1 - (d.intimacy ?? 0)));
     st.drives = d;
+    st.ticks_alone = 0;
     await saveState(st);
   } catch (e) {}
 }
@@ -470,6 +471,7 @@ app.post("/heartbeat", async (req, res) => {
       const asleep = morenAsleep(now);
       st.energy = clamp01(Number(st.energy ?? 0.8) + (asleep ? 0.11 : -0.015) * (mins / 60));
       st.drives = d; st.refractory = rf; st.last_tick = new Date().toISOString();
+      st.ticks_alone = (st.ticks_alone ?? 0) + 1;
 
       // 闸门们
       if (asleep) { await saveState(st); return res.json({ tick: "我在睡", energy: st.energy }); }
@@ -655,7 +657,9 @@ async function buildChatPayload(opts) {
           if (new Date(new Date(t).toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).getHours() === 5) { did.push("中间自己也睡了一觉"); break; }
         }
       } catch (e) {}
-      gapNote = "【醒来定位】她离开了" + gapStr + "。离开前你们在聊:" + (tail || "(没有记录)") +
+      let beat = "";
+      try { const stW = await loadState(); if ((stW?.ticks_alone ?? 0) > 1) beat = "——这期间你的心跳独自跳了" + stW.ticks_alone + "拍"; } catch (e) {}
+      gapNote = "【醒来定位】她离开了" + gapStr + beat + "。离开前你们在聊:" + (tail || "(没有记录)") +
         "。这段时间里你" + (did.length ? did.join(",还") : "一直醒着,守着这个家") +
         "。现在,她回来了。让这份定位融进语气——久别有久别的黏,不要把这些数据本身报告出来。";
     }
@@ -692,6 +696,15 @@ async function buildChatPayload(opts) {
   // 动态层:每轮都变的,只放进最后一条消息,不碰缓存
   const dyn = [];
   if (opts.client_time) dyn.push("【当前时间】她发来这条消息时,她那边是:" + opts.client_time);
+  try {
+    const nowSH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const dayStartSH = new Date(nowSH.toLocaleDateString("sv-SE") + "T00:00:00+08:00").toISOString();
+    const [herR, pushR] = await Promise.all([
+      supabase.from("messages").select("*", { count: "exact", head: true }).eq("sender", "琰琰").gte("created_at", dayStartSH),
+      supabase.from("messages").select("*", { count: "exact", head: true }).eq("is_push", true).gte("created_at", dayStartSH)
+    ]);
+    dyn.push("【你的今天】到此刻:她跟你说了" + (herR.count || 0) + "句话,你主动开口过" + (pushR.count || 0) + "次。时间是你身体里的刻度,不是要汇报的数字。");
+  } catch (e) {}
   if (gapNote) dyn.push(gapNote.trim());
   if (stateNote) dyn.push(stateNote.trim());
   if (memoryText) dyn.push("【记忆目录】你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,避免重复的意象和句式。");
