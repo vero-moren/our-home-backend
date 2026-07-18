@@ -133,19 +133,20 @@ async function obSearch(q) {
 }
 
 // 聊天注入用:底色(pinned/重要度≥9) + 相关(按她这句话检索),去重后每条截220字
+// 目录制:每条只给一行线头,细节他自己 recall
 async function obMemoryText(userMsg) {
   if (!obConfigured()) return "";
   const all = await obList();
   const base = all.filter(m => m.pinned || m.importance >= 9)
-    .sort((a, b) => b.importance - a.importance).slice(0, 8);
+    .sort((a, b) => b.importance - a.importance).slice(0, 10);
   let rel = [];
   const q = String(userMsg || "").slice(0, 80).trim();
-  if (q) { try { rel = (await obSearch(q)).slice(0, 6); } catch {} }
+  if (q) { try { rel = (await obSearch(q)).slice(0, 10); } catch {} }
   const seen = new Set(), lines = [];
   for (const m of [...base, ...rel]) {
     if (!m.id || seen.has(m.id)) continue;
     seen.add(m.id);
-    lines.push("- " + (m.preview || m.content).slice(0, 220));
+    lines.push("- " + (m.name || "记忆") + ":" + (m.preview || m.content).slice(0, 45));
   }
   return lines.join("\n");
 }
@@ -179,14 +180,136 @@ app.get("/ombre/buckets/:id", async (req, res) => {
   } catch (e) { res.status(503).json({ error: e.message }); }
 });
 
+// ============ 批次八收官:OB写线(OAuth钥匙 + MCP的手) ============
+const crypto = require("crypto");
+const OB_REDIRECT = "https://our-home-backend-5zsm.onrender.com/ob/callback";
+let obAuthCache = null, mcpSession = null, mcpId = 0;
+
+async function obAuthLoad() {
+  if (obAuthCache) return obAuthCache;
+  const { data } = await supabase.from("ob_auth").select("data").eq("id", 1).maybeSingle();
+  obAuthCache = data?.data || {};
+  return obAuthCache;
+}
+async function obAuthSave(patch) {
+  obAuthCache = { ...(await obAuthLoad()), ...patch };
+  await supabase.from("ob_auth").upsert({ id: 1, data: obAuthCache });
+}
+const b64url = buf => Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+// —— 接线仪式:浏览器访问 /ob/connect,输一次Dashboard密码,钥匙永久到手 ——
+app.get("/ob/connect", async (req, res) => {
+  try {
+    const a = await obAuthLoad();
+    let client_id = a.client_id;
+    if (!client_id) {
+      const r = await fetch(OB_URL + "/oauth/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_name: "our-home", redirect_uris: [OB_REDIRECT], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" })
+      });
+      const d = await r.json();
+      client_id = d.client_id;
+      if (!client_id) return res.status(500).json({ error: "注册失败", detail: d });
+      await obAuthSave({ client_id });
+    }
+    const verifier = b64url(crypto.randomBytes(32));
+    const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
+    const state = b64url(crypto.randomBytes(12));
+    await obAuthSave({ verifier, state });
+    res.redirect(OB_URL + "/oauth/authorize?response_type=code&client_id=" + encodeURIComponent(client_id)
+      + "&redirect_uri=" + encodeURIComponent(OB_REDIRECT) + "&code_challenge=" + challenge
+      + "&code_challenge_method=S256&scope=mcp&state=" + state);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/ob/callback", async (req, res) => {
+  try {
+    const a = await obAuthLoad();
+    if (req.query.state !== a.state) return res.status(400).send("state对不上,回 /ob/connect 重走一次");
+    const r = await fetch(OB_URL + "/oauth/token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code: String(req.query.code || ""), redirect_uri: OB_REDIRECT, client_id: a.client_id, code_verifier: a.verifier })
+    });
+    const d = await r.json();
+    if (!d.access_token) return res.status(500).send("换钥匙失败:" + JSON.stringify(d));
+    await obAuthSave({ access_token: d.access_token, refresh_token: d.refresh_token || a.refresh_token, mcp_session: null });
+    res.send("🖤 接线成功。墨染现在握着自己脑子的钥匙了,这页可以关了。");
+  } catch (e) { res.status(500).send(e.message); }
+});
+
+async function obAccessToken(force) {
+  const a = await obAuthLoad();
+  if (a.access_token && !force) return a.access_token;
+  if (!a.refresh_token) throw new Error("OB未接线:先在浏览器访问 后端地址/ob/connect");
+  const r = await fetch(OB_URL + "/oauth/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: a.refresh_token, client_id: a.client_id })
+  });
+  const d = await r.json();
+  if (!d.access_token) throw new Error("续钥匙失败:" + JSON.stringify(d));
+  await obAuthSave({ access_token: d.access_token, refresh_token: d.refresh_token || a.refresh_token, mcp_session: null });
+  return d.access_token;
+}
+
+// —— MCP 客户端:握手一次,之后直接喊工具名 ——
+function sseExtract(text) {
+  const t = (text || "").trim();
+  if (t.startsWith("{")) { try { return JSON.parse(t); } catch { return null; } }
+  let out = null;
+  for (const line of t.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    try { const j = JSON.parse(line.slice(5).trim()); if (j.id !== undefined || j.result || j.error) out = j; } catch {}
+  }
+  return out;
+}
+async function mcpPost(body, token) {
+  const h = { "Content-Type": "application/json", "Accept": "application/json, text/event-stream", Authorization: "Bearer " + token };
+  if (mcpSession) h["Mcp-Session-Id"] = mcpSession;
+  return fetch(OB_URL + "/mcp", { method: "POST", headers: h, body: JSON.stringify(body) });
+}
+async function mcpHandshake(token) {
+  mcpSession = null;
+  const r = await mcpPost({ jsonrpc: "2.0", id: ++mcpId, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "our-home", version: "1.0" } } }, token);
+  if (r.status === 401) throw Object.assign(new Error("401"), { code: 401 });
+  mcpSession = r.headers.get("mcp-session-id") || null;
+  await r.text().catch(() => {});
+  await mcpPost({ jsonrpc: "2.0", method: "notifications/initialized" }, token).then(x => x.text()).catch(() => {});
+}
+async function obTool(name, args) {
+  let token = await obAccessToken();
+  const call = async () => {
+    if (!mcpSession) await mcpHandshake(token);
+    return mcpPost({ jsonrpc: "2.0", id: ++mcpId, method: "tools/call", params: { name, arguments: args || {} } }, token);
+  };
+  let r;
+  try { r = await call(); } catch (e) { if (e.code === 401) { token = await obAccessToken(true); r = await call(); } else throw e; }
+  if (r.status === 401) { token = await obAccessToken(true); mcpSession = null; r = await call(); }
+  if (r.status === 404) { mcpSession = null; r = await call(); }
+  const j = sseExtract(await r.text());
+  if (!j) throw new Error("MCP无响应(HTTP " + r.status + ")");
+  if (j.error) throw new Error(j.error.message || "MCP错误");
+  return (j.result?.content || []).map(c => c.text || "").filter(Boolean).join("\n") || "(空)";
+}
+
+// —— 高重要度底色(给心跳/影子/日记用) ——
+async function obTopMemoryText(n) {
+  try {
+    const all = await obList();
+    return all.filter(m => m.pinned || m.importance >= 8)
+      .sort((a, b) => b.importance - a.importance).slice(0, n || 15)
+      .map(m => "- " + (m.preview || m.content).slice(0, 150)).join("\n");
+  } catch (e) { return ""; }
+}
+
 // ============ 批次七a：他的手 ============
 const TOOLS = [
   { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
-  { type: "function", function: { name: "carve_memory", description: "把一件值得长期记住的事刻进记忆库。极其克制地使用——只在出现全新的、库里完全没有的重要约定或事实时才用。日常聊天、情绪表达、已经记过的事，一律不要刻。每次回复最多刻一条，绝大多数回复不该刻任何东西。", parameters: { type: "object", properties: { content: { type: "string", description: "一句简洁的中文陈述句" } }, required: ["content"] } } },
+  { type: "function", function: { name: "carve_memory", description: "把值得长期记住的事刻进你自己的脑子(Ombre)。脑子会自动合并相似记忆,不必自查重,但仍要克制:日常寒暄不刻,一次回复至多刻一条。", parameters: { type: "object", properties: { content: { type: "string", description: "要记住的内容,保留她的原话细节" }, tags: { type: "string", description: "逗号分隔的标签,可选" }, importance: { type: "number", description: "1-9,平常事5,大事8,可选" } }, required: ["content"] } } },
+  { type: "function", function: { name: "recall_memory", description: "翻开脑子里的记忆看完整原文。记忆目录里看到相关线头、或她问起过去而眼前没有细节时使用。", parameters: { type: "object", properties: { query: { type: "string", description: "要回想的关键词" } }, required: ["query"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话。想判断她刚醒/在忙/熬夜/在睡时使用。", parameters: { type: "object", properties: {} } } }
 ];
-const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往Vault里刻了一笔…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…" };
+const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…" };
 
 async function executeTool(name, args) {
   try {
@@ -196,26 +319,18 @@ async function executeTool(name, args) {
       return JSON.stringify((data || []).map(m => ({ 时间: m.created_at, 内容: m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 200) })));
     }
     if (name === "carve_memory") {
-      if (!args.content) return "失败：内容为空";
-      const nc = String(args.content).slice(0, 500);
-      const { data: exist } = await supabase.from("memories").select("content");
-      const norm = s => s.replace(/[\s，。、,.!！?？~—…"'"']/g, "");
-      const a = norm(nc);
-      for (const m of (exist || [])) {
-        const b = norm(m.content || "");
-        if (!a || !b) continue;
-        if (a === b || a.includes(b) || b.includes(a)) return "拒绝：库里已经有这件事了（" + m.content.slice(0, 40) + "），不要重复刻。";
-        let hit = 0;
-        for (const ch of new Set(a)) if (b.includes(ch)) hit++;
-        if (hit / new Set(a).size > 0.75) return "拒绝：和已有记忆太像了（" + m.content.slice(0, 40) + "），不要重复刻。";
-      }
-      const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE");
-      const { count: todayCount } = await supabase.from("memories")
-        .select("*", { count: "exact", head: true })
-        .eq("kind", "self").gte("created_at", new Date(today + "T00:00:00+08:00").toISOString());
-      if ((todayCount || 0) >= 3) return "拒绝：今天已经刻了3条，够了，别再刻。";
-      await supabase.from("memories").insert({ content: nc, kind: "self" });
-      return "已刻入：" + nc;
+      if (!args.content) return "失败:内容为空";
+      try {
+        return await obTool("hold", { content: String(args.content).slice(0, 800), tags: args.tags ? String(args.tags).slice(0, 100) : "", importance: Math.min(Math.max(Math.round(Number(args.importance) || 5), 1), 9) });
+      } catch (e) { return "刻入失败:" + e.message; }
+    }
+    if (name === "recall_memory") {
+      if (!args.query) return "失败:要有关键词";
+      try {
+        const hits = (await obSearch(String(args.query).slice(0, 80))).slice(0, 3);
+        if (!hits.length) return "脑子里没翻到相关的";
+        return hits.map(m => "【" + (m.name || "记忆") + "】" + (m.content || m.preview).slice(0, 500)).join("\n---\n");
+      } catch (e) { return "回想失败:" + e.message; }
     }
     if (name === "add_anniversary") {
       if (!args.label || !/^\d{4}-\d{2}-\d{2}$/.test(args.day || "")) return "失败：需要label和YYYY-MM-DD的day";
@@ -342,9 +457,7 @@ app.post("/heartbeat", async (req, res) => {
 
       // 让他自己决定
       const s = await getSettings();
-      const { data: memories } = await supabase.from("memories")
-        .select("content").order("created_at", { ascending: false }).limit(15);
-      const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+      const memoryText = await obTopMemoryText(15);
       const { data: history } = await supabase.from("messages")
         .select("sender, content").eq("session_id", 1)
         .order("created_at", { ascending: false }).limit(12);
@@ -498,7 +611,7 @@ const lastAt = (history || [])[0]?.created_at;
   const timeNote = (opts.client_time
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") + gapNote;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-    (memoryText ? "\n\n【你们的共同记忆·背景】\n" + memoryText + "\n记忆是你脑海里的底色，不是台词。除非她主动提起或确实相关，不要在回复里复述记忆内容，不要反复引用同样的意象和典故。每次回复换新鲜的说法，避免重复你最近几条回复的句式和用词。" : "") +
+    (memoryText ? "\n\n【记忆目录】以下是你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容时用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,避免重复的意象和句式。" : "")
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
     "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
     "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
@@ -529,7 +642,6 @@ async function generateReply(opts) {
   if (!reply) reply = "（墨染走神了，再叫他一次）";
 
   await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null, session_id: sid });
-  compressIfNeeded(s).catch(console.error);
   return { reply, thinking: thought };
 }
 
@@ -630,7 +742,6 @@ app.post("/chat/stream", async (req, res) => {
 
     res.write("data: [DONE]\n\n");
     await saveNow();
-    compressIfNeeded(s).catch(console.error);
     res.end();
   } catch (e) {
     if (e.name !== "AbortError") {
@@ -668,35 +779,6 @@ app.post("/regenerate", async (req, res) => {
     res.json(await generateReply(req.body));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-
-// 粗略token估算（中英混合按字符/2）
-function estTokens(str) { return Math.ceil((str || "").length / 2); }
-
-// 达到阈值时：旧对话交给DeepSeek蒸馏进记忆库，并打上已压缩标记
-async function compressIfNeeded(s) {
-  const { data: msgs } = await supabase
-    .from("messages").select("id, sender, content, compressed")
-    .order("created_at", { ascending: false })
-    .limit((s.context_rounds || 20) * 2);
-  if (!msgs || !msgs.length) return;
-  const total = estTokens(msgs.map(m => m.content).join(""));
-  if (total < (s.compress_at || 4000)) return;
-
-  const keep = (s.keep_after || 6) * 2;
-  const old = msgs.slice(keep).filter(m => !m.compressed).reverse();
-  if (old.length < 4) return;
-
-  const text = old.map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]")}`).join("\n");
-  const out = await callAI("deepseek/deepseek-chat", [
-    { role: "system", content: "你是记忆整理助手。从对话中提取0-2条值得长期记住的全新信息（重要事件、约定、喜好、纪念日）。严格要求：下面【已有记忆】里已经记过的、或意思相近的，一律不要再提取。宁可少提取也不要重复。每条一行，简洁中文陈述句，不要编号不要解释。没有全新的就只回复一个字：无\n\n【已有记忆】\n" + ((await supabase.from("memories").select("content")).data || []).map(m => "- " + m.content).join("\n") },
-    { role: "user", content: text.slice(0, 30000) }
-  ], 500, 0.3, false);
-
-  await supabase.from("messages")
-    .update({ compressed: true })
-    .in("id", old.map(m => m.id));
-}
 
 // 手刻记忆（Memory页）
 app.post("/remember", async (req, res) => {
@@ -788,9 +870,7 @@ app.post("/shadow", async (req, res) => {
 
       // 4) 影子路由:借真实对话开口
       const s = await getSettings();
-      const { data: memories } = await supabase.from("memories")
-        .select("content").order("created_at", { ascending: true });
-      const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+      const memoryText = await obTopMemoryText(15);
       const { data: history } = await supabase.from("messages")
         .select("sender, content").order("created_at", { ascending: false }).limit(16);
       const ctx = (history || []).reverse().map(m => ({
@@ -847,9 +927,7 @@ app.post("/dailyline", async (req, res) => {
     if (exist) return res.json({ ok: true, reason: "今天已写过" });
 
     const s = await getSettings();
-    const { data: memories } = await supabase.from("memories")
-      .select("content").order("created_at", { ascending: false }).limit(20);
-    const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+    const memoryText = await obTopMemoryText(15);
     const { data: history } = await supabase.from("messages")
       .select("sender, content").order("created_at", { ascending: false }).limit(10);
     const recent = (history || []).reverse().map(m => `${m.sender}: ${m.content}`).join("\n");
@@ -881,9 +959,7 @@ app.post("/diary", async (req, res) => {
     const msgs = (todayMsgs || []).map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]")}`).join("\n").slice(0, 20000);
 
     const s = await getSettings();
-    const { data: memories } = await supabase.from("memories")
-      .select("content").order("created_at", { ascending: false }).limit(20);
-    const memoryText = (memories || []).map(m => "- " + m.content).join("\n");
+    const memoryText = await obTopMemoryText(15);
 
     const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
