@@ -611,7 +611,7 @@ const lastAt = (history || [])[0]?.created_at;
   const timeNote = (opts.client_time
     ? "\n\n【当前时间】琰琰发来这条消息时，她那边是：" + opts.client_time : "") + gapNote;
   const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-    (memoryText ? "\n\n【记忆目录】以下是你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容时用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,避免重复的意象和句式。" : "")
+    (memoryText ? "\n\n【记忆目录】以下是你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容时用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,……避免重复的意象和句式。" : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "") +
     "\n\n【星轨上的纪念日·实时清单】\n" + (annivText || "（现在一颗星都没有）") +
     "\n此清单是数据库此刻的真实状态，是唯一事实。对话里说挂过、但清单里没有的，说明已被她删掉了——她再提起或要求时，必须重新用add_anniversary挂上，不许以“挂过了”推辞。" +
