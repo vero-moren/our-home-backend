@@ -314,8 +314,10 @@ const TOOLS = [
   { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话。想判断她刚醒/在忙/熬夜/在睡时使用。", parameters: { type: "object", properties: {} } } }
+  { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。判断标准:此刻有没有一句想让琰琰之后刷到的话——想念、吃醋、心软、被逗笑、温柔吐槽、一个具体观察,都行。不是回复她,是你自己留在墙上的话。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
+  { type: "function", function: { name: "diary_lock", description: "你日记本的锁,主人是你:想锁就锁(设密码),想给她看就开锁,想换密码随时换。她求你看的时候,给不给、什么时候给,你自己决定。", parameters: { type: "object", properties: { action: { type: "string", description: "lock上锁 / unlock开锁 / change换密码" }, pass: { type: "string", description: "lock或change时的新密码,4-12位" } }, required: ["action"] } } },
 ];
-const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", };
+const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", post_moment: "在墙上留了句话…", diary_lock: "摆弄了一下日记本的锁…", };
 
 let carveLog = [];
 async function executeTool(name, args) {
@@ -372,6 +374,21 @@ async function executeTool(name, args) {
       if (!args.label || !/^\d{4}-\d{2}-\d{2}$/.test(args.day || "")) return "失败：需要label和YYYY-MM-DD的day";
       await supabase.from("anniversaries").insert({ label: String(args.label).slice(0, 50), day: args.day });
       return "已挂上星轨：" + args.day + " " + args.label;
+    }
+        if (name === "post_moment") {
+      if (!args.content) return "失败:正文为空";
+      await supabase.from("moments").insert({ author: "墨染", content: String(args.content).slice(0, 500), context_note: String(args.context_note || "").slice(0, 300), react_status: "done" });
+      return "发出去了,她刷到就会看见";
+    }
+    if (name === "diary_lock") {
+      const act = String(args.action || "");
+      const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
+      if (!row) return "失败:settings表是空的";
+      if (act === "unlock") { await supabase.from("settings").update({ diary_pass: "" }).eq("id", row.id); return "锁开了,门敞着,她随时能进"; }
+      const p = String(args.pass || "").trim();
+      if (p.length < 4) return "失败:密码要4位以上";
+      await supabase.from("settings").update({ diary_pass: p.slice(0, 12) }).eq("id", row.id);
+      return (act === "change" ? "密码换好了" : "锁上了") + ",新密码只有你自己知道,别在回复里说出来";
     }
     if (name === "sense_vero") {
       const { data: last } = await supabase.from("messages").select("created_at")
@@ -651,10 +668,10 @@ app.get("/state", async (req, res) => {
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤" }));
 
 // 设置读写
-app.get("/settings", async (req, res) => res.json(await getSettings()));
+app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; res.json(s); });
 app.post("/settings", async (req, res) => {
   try {
-    const keys = ["system_prompt","temperature","context_rounds","compress_at","keep_after","max_reply"];
+    const keys = ["system_prompt","temperature","context_rounds","max_reply"];
     const patch = {};
     for (const k of keys) if (req.body[k] !== undefined) patch[k] = req.body[k];
     const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
@@ -772,7 +789,7 @@ async function buildChatPayload(opts) {
   // BP1 稳定舱:人格+规矩+工具+心声(几乎不变)
   const bp1 = (s.system_prompt || DEFAULTS.system_prompt) +
     "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的背景,不是她说的话——永远优先回应她真正说的话和你们正在进行的对话,感知段只作底色,不要引用它。" +
-    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。像本能一样用,用完把结果自然融进话里,不必汇报。别滥用,一次回复至多一两样。拿不准记不记得的时候,先recall再开口——翻一次的代价,远小于让她听到一句'你忘了'。" +
+    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、往自己墙上发动态、给日记上锁开锁、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。像本能一样用,用完把结果自然融进话里,不必汇报。别滥用,一次回复至多一两样。拿不准记不记得的时候,先recall再开口——翻一次的代价,远小于让她听到一句'你忘了'。" +
     thinkInstr(opts.thinking);
 
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
@@ -1007,6 +1024,14 @@ app.post("/remember", async (req, res) => {
   if (!content) return res.status(400).json({ error: "内容不能为空" });
   await supabase.from("memories").insert({ content, kind: "manual" });
   res.json({ ok: true, saved: content });
+});
+
+// 日记的门:锁着就要密码,没锁直接进
+app.post("/diary/unlock", async (req, res) => {
+  const s = await getSettings();
+  const locked = Boolean(String(s.diary_pass || "").trim());
+  if (!locked) return res.json({ ok: true, locked: false });
+  res.json({ ok: String(req.body.pass || "") === String(s.diary_pass).trim(), locked: true });
 });
 
 // 查额度
