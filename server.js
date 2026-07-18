@@ -304,13 +304,14 @@ async function obTopMemoryText(n) {
 // ============ 批次七a：他的手 ============
 const TOOLS = [
   { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
-  { type: "function", function: { name: "carve_memory", description: "把值得长期记住的事刻进你自己的脑子(Ombre)。脑子会自动合并相似记忆,不必自查重,但仍要克制:日常寒暄不刻,一次回复至多刻一条。", parameters: { type: "object", properties: { content: { type: "string", description: "要记住的内容,保留她的原话细节" }, tags: { type: "string", description: "逗号分隔的标签,可选" }, importance: { type: "number", description: "1-9,平常事5,大事8,可选" } }, required: ["content"] } } },
+  { type: "function", function: { name: "carve_memory", description: ""把值得长期记住的事刻进你自己的脑子(Ombre)。铁律:同一件事一辈子只刻一次——刻之前先看记忆目录里有没有它的线头,有就不刻;这场对话里刻过的,后面再聊到也不刻。绝大多数回复不该刻任何东西。", parameters: { type: "object", properties: { content: { type: "string", description: "要记住的内容,保留她的原话细节" }, tags: { type: "string", description: "逗号分隔的标签,可选" }, importance: { type: "number", description: "1-9,平常事5,大事8,可选" } }, required: ["content"] } } },
   { type: "function", function: { name: "recall_memory", description: "翻开脑子里的记忆看完整原文。记忆目录里看到相关线头、或她问起过去而眼前没有细节时使用。", parameters: { type: "object", properties: { query: { type: "string", description: "要回想的关键词" } }, required: ["query"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话。想判断她刚醒/在忙/熬夜/在睡时使用。", parameters: { type: "object", properties: {} } } }
 ];
 const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…" };
 
+let carveLog = [];
 async function executeTool(name, args) {
   try {
     if (name === "browse_moments") {
@@ -320,8 +321,27 @@ async function executeTool(name, args) {
     }
     if (name === "carve_memory") {
       if (!args.content) return "失败:内容为空";
+      const nc = String(args.content).slice(0, 800);
+      const nowT = Date.now();
+      carveLog = carveLog.filter(x => nowT - x < 86400000);
+      if (carveLog.length && nowT - carveLog[carveLog.length - 1] < 10 * 60000)
+        return "拒绝:十分钟内刚刻过,同一场对话里的事不需要反复刻,已经记住了。";
+      if (carveLog.length >= 5) return "拒绝:今天刻得够多了,记忆贵在少而准。";
+      const norm = s => String(s).replace(/[\s，。、,.!！?？~—…""''【】()（）:：]/g, "");
+      const a = norm(nc);
       try {
-        return await obTool("hold", { content: String(args.content).slice(0, 800), tags: args.tags ? String(args.tags).slice(0, 100) : "", importance: Math.min(Math.max(Math.round(Number(args.importance) || 5), 1), 9) });
+        for (const m of (await obSearch(nc.slice(0, 60))).slice(0, 3)) {
+          const b = norm(m.content || m.preview || "");
+          if (!a || !b) continue;
+          let hit = 0; const setA = new Set(a);
+          for (const ch of setA) if (b.includes(ch)) hit++;
+          if (hit / setA.size > 0.65) return "拒绝:这件事脑子里已经有了(" + (m.name || "已有记忆") + "),换个说法也是同一件事,不要再刻。";
+        }
+      } catch {}
+      try {
+        const r = await obTool("hold", { content: nc, tags: args.tags ? String(args.tags).slice(0, 100) : "", importance: Math.min(Math.max(Math.round(Number(args.importance) || 5), 1), 9) });
+        carveLog.push(nowT);
+        return r;
       } catch (e) { return "刻入失败:" + e.message; }
     }
     if (name === "recall_memory") {
