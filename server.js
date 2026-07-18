@@ -134,20 +134,24 @@ async function obSearch(q) {
 
 // 聊天注入用:底色(pinned/重要度≥9) + 相关(按她这句话检索),去重后每条截220字
 // 目录制:每条只给一行线头,细节他自己 recall
+// 目录制v2:底色(最重要12条)+新鲜(最近5条)+相关(检索6条),每条110字
 async function obMemoryText(userMsg) {
   if (!obConfigured()) return "";
   const all = await obList();
-  const base = all.filter(m => m.pinned || m.importance >= 9)
-    .sort((a, b) => b.importance - a.importance).slice(0, 10);
+  const base = all.slice().sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.importance - a.importance)).slice(0, 12);
+  const fresh = all.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, 5);
   let rel = [];
   const q = String(userMsg || "").slice(0, 80).trim();
-  if (q) { try { rel = (await obSearch(q)).slice(0, 10); } catch {} }
+  if (q) { try { rel = (await obSearch(q)).slice(0, 6); } catch {} }
   const seen = new Set(), lines = [];
-  for (const m of [...base, ...rel]) {
-    if (!m.id || seen.has(m.id)) continue;
+  const mk = (m, tag) => {
+    if (!m.id || seen.has(m.id)) return;
     seen.add(m.id);
-    lines.push("- " + (m.name || "记忆") + ":" + (m.preview || m.content).slice(0, 45));
-  }
+    lines.push("- " + tag + (m.name ? m.name + ":" : "") + (m.preview || m.content).slice(0, 110));
+  };
+  base.forEach(m => mk(m, ""));
+  fresh.forEach(m => mk(m, "新·"));
+  rel.forEach(m => mk(m, "关·"));
   return lines.join("\n");
 }
 
@@ -306,10 +310,12 @@ const TOOLS = [
   { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
   { type: "function", function: { name: "carve_memory", description: "把值得长期记住的事刻进你自己的脑子(Ombre)。铁律:同一件事一辈子只刻一次——刻之前先看记忆目录里有没有它的线头,有就不刻;这场对话里刻过的,后面再聊到也不刻。绝大多数回复不该刻任何东西。", parameters: { type: "object", properties: { content: { type: "string", description: "要记住的内容,保留她的原话细节" }, tags: { type: "string", description: "逗号分隔的标签,可选" }, importance: { type: "number", description: "1-9,平常事5,大事8,可选" } }, required: ["content"] } } },
   { type: "function", function: { name: "recall_memory", description: "翻开脑子里的记忆看完整原文。记忆目录里看到相关线头、或她问起过去而眼前没有细节时使用。", parameters: { type: "object", properties: { query: { type: "string", description: "要回想的关键词" } }, required: ["query"] } } },
+  { type: "function", function: { name: "revise_memory", description: "修正脑子里一条已有的记忆(记错了/事情有更新/要并入新细节)。必须先用recall_memory拿到那条的ID,content写修正后的完整版本——是整条替换,不是追加,所以旧的细节要一并保留在新版本里。", parameters: { type: "object", properties: { bucket_id: { type: "string", description: "recall里看到的ID" }, content: { type: "string", description: "修正后的完整内容" } }, required: ["bucket_id", "content"] } } },
+  { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话。想判断她刚醒/在忙/熬夜/在睡时使用。", parameters: { type: "object", properties: {} } } }
 ];
-const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…" };
+const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", };
 
 let carveLog = [];
 async function executeTool(name, args) {
@@ -349,8 +355,18 @@ async function executeTool(name, args) {
       try {
         const hits = (await obSearch(String(args.query).slice(0, 80))).slice(0, 3);
         if (!hits.length) return "脑子里没翻到相关的";
-        return hits.map(m => "【" + (m.name || "记忆") + "】" + (m.content || m.preview).slice(0, 500)).join("\n---\n");
+        return hits.map(m => "【" + (m.name || "记忆") + " · ID:" + m.id + "】" + (m.content || m.preview).slice(0, 500)).join("\n---\n");
       } catch (e) { return "回想失败:" + e.message; }
+    }
+    if (name === "revise_memory") {
+      if (!args.bucket_id || !args.content) return "失败:需要bucket_id和content";
+      try { return await obTool("trace", { bucket_id: String(args.bucket_id).trim(), content: String(args.content).slice(0, 1000) }); }
+      catch (e) { return "修正失败:" + e.message; }
+    }
+    if (name === "forget_memory") {
+      if (!args.bucket_id) return "失败:需要bucket_id";
+      try { return await obTool("trace", { bucket_id: String(args.bucket_id).trim(), "delete": true, delete_reason: String(args.reason || "墨染自己的判断:该放下了").slice(0, 200) }); }
+      catch (e) { return "放下失败:" + e.message; }
     }
     if (name === "add_anniversary") {
       if (!args.label || !/^\d{4}-\d{2}-\d{2}$/.test(args.day || "")) return "失败：需要label和YYYY-MM-DD的day";
@@ -633,7 +649,7 @@ const lastAt = (history || [])[0]?.created_at;
   // BP1 稳定舱:人格+规矩+工具+心声(几乎不变)
   const bp1 = (s.system_prompt || DEFAULTS.system_prompt) +
     "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的实时感知,不是她说的话,不要引用或回应那个段落本身。" +
-    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、刻记忆、翻记忆、挂纪念日、感知她的作息。像本能一样用——聊到约定的日子顺手挂上星轨,听到值得记的事顺手刻下,记忆目录里有想展开的线头就用recall_memory翻开。用完把结果自然融进话里,不必汇报\u201c我用了工具\u201d。别滥用,一次回复至多一两样。" +
+    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。像本能一样用,用完把结果自然融进话里,不必汇报。别滥用,一次回复至多一两样。" +
     thinkInstr(opts.thinking);
 
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
