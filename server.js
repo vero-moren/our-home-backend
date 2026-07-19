@@ -499,6 +499,33 @@ async function rollChunks(sid) {
   } catch (e) {} finally { chunkLock = false; }
 }
 
+// ===== 刀B v3:每20条滚一块,主存OB =====
+let chunkLock = false;
+async function rollChunks(sid) {
+  if (chunkLock) return; chunkLock = true;
+  try {
+    for (let guard = 0; guard < 2; guard++) {
+      const { data: lastCk } = await supabase.from("chunk_summaries")
+        .select("upto_id").eq("session_id", sid)
+        .order("upto_id", { ascending: false }).limit(1);
+      const from = lastCk?.[0]?.upto_id || 0;
+      const { data: fresh } = await supabase.from("messages")
+        .select("id, sender, content, created_at").eq("session_id", sid)
+        .gt("id", from).order("id", { ascending: true }).limit(20);
+      if (!fresh || fresh.length < 20) break;
+      const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 150)).join("\n");
+      const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
+      const out = await callAI("anthropic/claude-sonnet-4.5", [
+        { role: "user", content: "把这20条对话压成2-3句备忘,以\u201c琰琰\u201d和\u201c墨染\u201d为主语记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论:\n" + block + "\n只输出备忘本身。" }
+      ], 160, 0.3, false);
+      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 260);
+      if (!sm) break;
+      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, summary: "[" + when + "] " + sm });
+      try { await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }); } catch (e) {}
+    }
+  } catch (e) {} finally { chunkLock = false; }
+}
+
 // ===== 批次九:路过她的墙(点赞/评论/回楼) =====
 async function passWall() {
   const nowIso = new Date().toISOString();
@@ -808,7 +835,7 @@ async function buildChatPayload(opts) {
     const oldestId = (history || []).length ? Math.min(...history.map(h => h.id || 1e15)) : 0;
     const { data: cks } = await supabase.from("chunk_summaries")
       .select("summary").eq("session_id", sid).lt("upto_id", oldestId)
-      .order("upto_id", { ascending: false }).limit(12);
+      .order("upto_id", { ascending: false }).limit(10);
     sumText = (cks || []).reverse().map(x => "·" + x.summary).join("\n");
   } catch (e) {}
   const { data: lineC } = await supabase.from("daily_lines")
@@ -895,7 +922,7 @@ async function buildChatPayload(opts) {
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
   const bp2 = "【星轨上的纪念日·实时清单】\n" + (annivText || "(现在一颗星都没有)") +
     "\n此清单是数据库此刻的真实状态,是唯一事实。对话里说挂过、但清单里没有的,说明已被她删掉了——她再提起或要求时,必须重新用add_anniversary挂上,不许以\u201c挂过了\u201d推辞。" +
-    (sumText ? "\n\n【最近几天的脉络·备忘】\n" + sumText + "\n这是事实备忘,当背景用,不要复述。" : "") +
+    (sumText ? "\n\n【更早对话的脉络·备忘】\n" + sumText + "\n事实备忘,当背景,不要复述。" : "") +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "");
 
@@ -1274,6 +1301,42 @@ ${momText || "（暂无动态）"}
       res.json({ pushed: true, sent: msg });
     } finally { pushLock = false; }
   } catch (e) { pushLock = false; res.status(500).json({ error: e.message }); }
+});
+
+// ===== 刀B v3:每日消化(中午12点,总结昨日碎片成当日记忆) =====
+app.post("/digest", async (req, res) => {
+  try {
+    if ((req.headers["x-push-secret"] || "") !== (process.env.PUSH_SECRET || "moren"))
+      return res.status(401).json({ error: "不是自己人" });
+    const { data: raw } = await supabase.from("chunk_summaries")
+      .select("id, day, summary").eq("digested", false)
+      .order("id", { ascending: true }).limit(40);
+    if (!raw?.length) return res.json({ ok: true, reason: "没有待消化的碎片" });
+    const days = [...new Set(raw.map(x => String(x.day)))].sort();
+    const done = [];
+    for (const dy of days.slice(0, 3)) {
+      const mine = raw.filter(x => String(x.day) === dy);
+      const out = await callAI("anthropic/claude-sonnet-4.5", [
+        { role: "user", content: "以下是" + dy + "琰琰和墨染对话的分段备忘,合并成一段完整的当日记忆(150-280字):当天发生的事、决定、约定、她的状态,按时间脉络写,不抒情:\n" + mine.map(x => x.summary).join("\n") + "\n只输出这段记忆。" }
+      ], 450, 0.3, false);
+      const sm = (out.text || "").trim();
+      if (!sm) continue;
+      try {
+        await obTool("hold", { content: "【" + dy + "】" + sm, tags: "日常", importance: 6 });
+        // 归档OB里当天的碎片
+        for (const frag of mine) {
+          try {
+            const key = frag.summary.slice(0, 30);
+            const hits = (await obSearch(key)).filter(h => (h.name + h.content).includes("当日碎片")).slice(0, 1);
+            if (hits.length) await obTool("trace", { bucket_id: hits[0].id, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
+          } catch (e) {}
+        }
+        await supabase.from("chunk_summaries").update({ digested: true }).in("id", mine.map(x => x.id));
+        done.push(dy);
+      } catch (e) {}
+    }
+    res.json({ ok: true, digested: done });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 每日一句:他每天亲笔写一句
