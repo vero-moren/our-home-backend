@@ -482,7 +482,18 @@ async function rollChunks(sid) {
       const { data: lastCk } = await supabase.from("chunk_summaries")
         .select("upto_id").eq("session_id", sid)
         .order("upto_id", { ascending: false }).limit(1);
-      const from = lastCk?.[0]?.upto_id || 0;
+      let from = lastCk?.[0]?.upto_id;
+      if (from == null) {
+        const { data: newest } = await supabase.from("messages")
+          .select("id").eq("session_id", sid)
+          .order("id", { ascending: false }).limit(1);
+        await supabase.from("chunk_summaries").insert({
+          session_id: sid, upto_id: newest?.[0]?.id || 0,
+          day: new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE"),
+          summary: "[水位线] 初始化：只摘此后的新对话", digested: true
+        });
+        break;
+      }
       const { data: fresh } = await supabase.from("messages")
         .select("id, sender, content, created_at").eq("session_id", sid)
         .gt("id", from).order("id", { ascending: true }).limit(20);
@@ -494,7 +505,8 @@ async function rollChunks(sid) {
       ], 160, 0.3, false);
       const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 260);
       if (!sm) break;
-      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, summary: "[" + when + "] " + sm });
+      const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, day: daySH, summary: "[" + when + "] " + sm });
       try { await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }); } catch (e) {}
     }
   } catch (e) {} finally { chunkLock = false; }
