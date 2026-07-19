@@ -473,32 +473,6 @@ async function pulseHerTouch() {
   } catch (e) {}
 }
 
-// ===== 刀B v2:每10条对话滚一块摘要(L1) =====
-let chunkLock = false;
-async function rollChunks(sid) {
-  if (chunkLock) return; chunkLock = true;
-  try {
-    for (let guard = 0; guard < 3; guard++) {
-      const { data: lastCk } = await supabase.from("chunk_summaries")
-        .select("upto_id").eq("session_id", sid)
-        .order("upto_id", { ascending: false }).limit(1);
-      const from = lastCk?.[0]?.upto_id || 0;
-      const { data: fresh } = await supabase.from("messages")
-        .select("id, sender, content, created_at").eq("session_id", sid)
-        .gt("id", from).order("id", { ascending: true }).limit(10);
-      if (!fresh || fresh.length < 10) break;
-      const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 200)).join("\n");
-      const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
-      const out = await callAI("anthropic/claude-sonnet-4.5", [
-        { role: "user", content: "把这10条对话压成1-2句客观备忘(事实、决定、约定、她的状态,不抒情):\n" + block + "\n只输出备忘本身。" }
-      ], 120, 0.3, false);
-      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 200);
-      if (!sm) break;
-      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[9].id, summary: "[" + when + "] " + sm });
-    }
-  } catch (e) {} finally { chunkLock = false; }
-}
-
 // ===== 刀B v3:每20条滚一块,主存OB =====
 let chunkLock = false;
 async function rollChunks(sid) {
@@ -830,14 +804,6 @@ async function buildChatPayload(opts) {
     .select("label, day").order("day", { ascending: true });
   const annivText = (annivC || []).map(a => "- " + a.day + " " + a.label).join("\n");
 
-  let sumText = "";
-  try {
-    const oldestId = (history || []).length ? Math.min(...history.map(h => h.id || 1e15)) : 0;
-    const { data: cks } = await supabase.from("chunk_summaries")
-      .select("summary").eq("session_id", sid).lt("upto_id", oldestId)
-      .order("upto_id", { ascending: false }).limit(10);
-    sumText = (cks || []).reverse().map(x => "·" + x.summary).join("\n");
-  } catch (e) {}
   const { data: lineC } = await supabase.from("daily_lines")
     .select("line, day").order("day", { ascending: false }).limit(3);
   const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
@@ -846,6 +812,15 @@ async function buildChatPayload(opts) {
     .select("id, sender, content, created_at").eq("session_id", sid)
     .order("created_at", { ascending: false })
     .limit((s.context_rounds || 20) * 2);
+  
+  let sumText = "";
+  try {
+    const oldestId = (history || []).length ? Math.min(...history.map(h => h.id || 1e15)) : 0;
+    const { data: cks } = await supabase.from("chunk_summaries")
+      .select("summary").eq("session_id", sid).lt("upto_id", oldestId)
+      .order("upto_id", { ascending: false }).limit(10);
+    sumText = (cks || []).reverse().map(x => "·" + x.summary).join("\n");
+  } catch (e) {}
   const ctx = (history || []).reverse().map(m => {
     const t = new Date(m.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
     const body = m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[一张照片]").trim() || "[一张照片]";
@@ -1392,17 +1367,7 @@ app.post("/diary", async (req, res) => {
     const locked = /^【锁】/.test(content);
     content = content.replace(/^【锁】\s*/, "");
     await supabase.from("diary").insert({ content, day: today, locked });
-    // 刀B:当日摘要(中期记忆)
-    try {
-      const { data: exS } = await supabase.from("day_summaries").select("day").eq("day", today).maybeSingle();
-      if (!exS && msgs) {
-        const so = await callAI("anthropic/claude-sonnet-4.5", [
-          { role: "user", content: "把下面这一天的对话压成一段客观备忘(150-250字):今天发生了什么事、做了什么决定、完成了什么、有什么约定或未完成事项、她的状态。只写事实脉络,不写抒情,不用列表。只输出这段话。\n\n【" + today + "的对话】\n" + msgs }
-        ], 400, 0.3, false);
-        const sm = (so.text || "").trim();
-        if (sm) await supabase.from("day_summaries").insert({ day: today, summary: sm });
-      }
-    } catch (e) {}
+    
     res.json({ ok: true, content });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
