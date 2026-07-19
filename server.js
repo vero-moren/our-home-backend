@@ -473,6 +473,32 @@ async function pulseHerTouch() {
   } catch (e) {}
 }
 
+// ===== 刀B v2:每10条对话滚一块摘要(L1) =====
+let chunkLock = false;
+async function rollChunks(sid) {
+  if (chunkLock) return; chunkLock = true;
+  try {
+    for (let guard = 0; guard < 3; guard++) {
+      const { data: lastCk } = await supabase.from("chunk_summaries")
+        .select("upto_id").eq("session_id", sid)
+        .order("upto_id", { ascending: false }).limit(1);
+      const from = lastCk?.[0]?.upto_id || 0;
+      const { data: fresh } = await supabase.from("messages")
+        .select("id, sender, content, created_at").eq("session_id", sid)
+        .gt("id", from).order("id", { ascending: true }).limit(10);
+      if (!fresh || fresh.length < 10) break;
+      const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 200)).join("\n");
+      const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
+      const out = await callAI("anthropic/claude-sonnet-4.5", [
+        { role: "user", content: "把这10条对话压成1-2句客观备忘(事实、决定、约定、她的状态,不抒情):\n" + block + "\n只输出备忘本身。" }
+      ], 120, 0.3, false);
+      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 200);
+      if (!sm) break;
+      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[9].id, summary: "[" + when + "] " + sm });
+    }
+  } catch (e) {} finally { chunkLock = false; }
+}
+
 // ===== 批次九:路过她的墙(点赞/评论/回楼) =====
 async function passWall() {
   const nowIso = new Date().toISOString();
@@ -779,16 +805,18 @@ async function buildChatPayload(opts) {
 
   let sumText = "";
   try {
-    const { data: sums } = await supabase.from("day_summaries")
-      .select("day, summary").order("day", { ascending: false }).limit(4);
-    sumText = (sums || []).reverse().map(x => "·" + String(x.day).slice(5) + ":" + x.summary).join("\n");
+    const oldestId = (history || []).length ? Math.min(...history.map(h => h.id || 1e15)) : 0;
+    const { data: cks } = await supabase.from("chunk_summaries")
+      .select("summary").eq("session_id", sid).lt("upto_id", oldestId)
+      .order("upto_id", { ascending: false }).limit(12);
+    sumText = (cks || []).reverse().map(x => "·" + x.summary).join("\n");
   } catch (e) {}
   const { data: lineC } = await supabase.from("daily_lines")
     .select("line, day").order("day", { ascending: false }).limit(3);
   const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
 
   const { data: history } = await supabase.from("messages")
-    .select("sender, content, created_at").eq("session_id", sid)
+    .select("id, sender, content, created_at").eq("session_id", sid)
     .order("created_at", { ascending: false })
     .limit((s.context_rounds || 20) * 2);
   const ctx = (history || []).reverse().map(m => {
@@ -937,7 +965,7 @@ async function generateReply(opts) {
   if (!reply) reply = "（墨染走神了，再叫他一次）";
 
   await supabase.from("messages").insert({ sender: "墨染", content: reply, thought: thought || null, session_id: sid });
-  pulseEmotion(sid).catch(() => {});
+  pulseEmotion(sid).catch(() => {});rollChunks(sid).catch(() => {});
   return { reply, thinking: thought };
 }
 
@@ -1064,7 +1092,7 @@ app.post("/chat/stream", async (req, res) => {
 
     res.write("data: [DONE]\n\n");
     await saveNow();
-    pulseEmotion(sid).catch(() => {});
+    pulseEmotion(sid).catch(() => {});rollChunks(sid).catch(() => {});
     res.end();
   } catch (e) {
     if (e.name !== "AbortError") {
