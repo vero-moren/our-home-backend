@@ -507,6 +507,7 @@ async function rollChunks(sid) {
       if (!sm) break;
       const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
       await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, day: daySH, summary: "[" + when + "] " + sm });
+      try { await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }); } catch (e) {}
     }
   } catch (e) {} finally { chunkLock = false; }
 }
@@ -1303,6 +1304,14 @@ app.post("/digest", async (req, res) => {
       if (!sm) continue;
       try {
         await obTool("hold", { content: "【" + dy + "】" + sm, tags: "日常", importance: 6 });
+        // 归档OB里当天的碎片
+        for (const frag of mine) {
+          try {
+            const key = frag.summary.slice(0, 30);
+            const hits = (await obSearch(key)).filter(h => (h.name + h.content).includes("当日碎片")).slice(0, 1);
+            if (hits.length) await obTool("trace", { bucket_id: hits[0].id, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
+          } catch (e) {}
+        }
         await supabase.from("chunk_summaries").update({ digested: true }).in("id", mine.map(x => x.id));
         done.push(dy);
       } catch (e) {}
