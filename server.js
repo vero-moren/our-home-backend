@@ -349,7 +349,7 @@ async function executeTool(name, args) {
           if (!a || !b) continue;
           let hit = 0; const setA = new Set(a);
           for (const ch of setA) if (b.includes(ch)) hit++;
-          if (hit / setA.size > 0.65) return "拒绝:这件事脑子里已经有了(" + (m.name || "已有记忆") + "),换个说法也是同一件事,不要再刻。";
+          if (hit / setA.size > 0.65) return "拒绝:这件事脑子里已经有了(" + (m.name || "已有记忆") + ")。如果你是想补新细节,用revise_memory去修那一条,不开新刻。";
         }
       } catch {}
       try {
