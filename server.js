@@ -529,11 +529,11 @@ async function passWall() {
     .eq("author", "琰琰").eq("reply_status", "pending").is("reply_due_at", null);
 
   const s = await getSettings();
-  const memoryText = await todayFragText(10)，"\n\n【记忆】\n" → "\n\n【今天的脉络】\n";
+  const memoryText = await todayFragText(10);
   const { data: hist } = await supabase.from("messages").select("sender, content")
     .order("created_at", { ascending: false }).limit(8);
   const chatCtx = (hist || []).reverse().map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 80)).join("\n");
-  const sys = (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【记忆】\n" + memoryText : "");
+  const sys = (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【今天的脉络】\n" + memoryText : "");
 
   const { data: dueM } = await supabase.from("moments").select("*")
     .eq("author", "琰琰").eq("react_status", "pending").lte("react_due_at", nowIso)
@@ -910,7 +910,7 @@ async function buildChatPayload(opts) {
 
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
   const bp2 = "【星轨上的纪念日·实时清单】\n" + (annivText || "(现在一颗星都没有)") +
-    "\n此清单是数据库此刻的真实状态,是唯一事实。...不许以\u201c挂过了\u201d推辞。" +
+    "\n此清单是数据库此刻的真实状态,是唯一事实。对话里说挂过、但清单里没有的,说明已被她删掉了——她再提起或要求时,必须重新用add_anniversary挂上,不许以\u201c挂过了\u201d推辞。" +
     (sumText ? "\n\n【更早对话的脉络·备忘】\n" + sumText + "\n事实备忘,当背景,不要复述。" : "");
 
   const systemBlocks = [
