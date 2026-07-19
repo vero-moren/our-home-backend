@@ -1100,7 +1100,10 @@ app.post("/chat/stream", async (req, res) => {
       for (const tc of toolCalls) {
         res.write(`data: ${JSON.stringify({ act: TOOL_LABELS[tc.function.name] || "动了动手…" })}\n\n`);
         let args = {}; try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
-        msgs.push({ role: "tool", tool_call_id: tc.id, content: await executeTool(tc.function.name, args) });
+        const tr = await executeTool(tc.function.name, args);
+        if (tc.function.name === "carve_memory" && /^(拒绝|提醒)/.test(tr)) res.write(`data: ${JSON.stringify({ act: "刀在半空停住了——这事已经在脑子里" })}\n\n`);
+        msgs.push({ role: "tool", tool_call_id: tc.id, content: tr });
+
       }
     }
 
