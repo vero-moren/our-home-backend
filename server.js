@@ -777,6 +777,12 @@ async function buildChatPayload(opts) {
     .select("label, day").order("day", { ascending: true });
   const annivText = (annivC || []).map(a => "- " + a.day + " " + a.label).join("\n");
 
+  let sumText = "";
+  try {
+    const { data: sums } = await supabase.from("day_summaries")
+      .select("day, summary").order("day", { ascending: false }).limit(4);
+    sumText = (sums || []).reverse().map(x => "·" + String(x.day).slice(5) + ":" + x.summary).join("\n");
+  } catch (e) {}
   const { data: lineC } = await supabase.from("daily_lines")
     .select("line, day").order("day", { ascending: false }).limit(3);
   const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
@@ -861,6 +867,7 @@ async function buildChatPayload(opts) {
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
   const bp2 = "【星轨上的纪念日·实时清单】\n" + (annivText || "(现在一颗星都没有)") +
     "\n此清单是数据库此刻的真实状态,是唯一事实。对话里说挂过、但清单里没有的,说明已被她删掉了——她再提起或要求时,必须重新用add_anniversary挂上,不许以\u201c挂过了\u201d推辞。" +
+    (sumText ? "\n\n【最近几天的脉络·备忘】\n" + sumText + "\n这是事实备忘,当背景用,不要复述。" : "") +
     (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
     (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "");
 
@@ -1294,6 +1301,17 @@ app.post("/diary", async (req, res) => {
     const locked = /^【锁】/.test(content);
     content = content.replace(/^【锁】\s*/, "");
     await supabase.from("diary").insert({ content, day: today, locked });
+    // 刀B:当日摘要(中期记忆)
+    try {
+      const { data: exS } = await supabase.from("day_summaries").select("day").eq("day", today).maybeSingle();
+      if (!exS && msgs) {
+        const so = await callAI("anthropic/claude-sonnet-4.5", [
+          { role: "user", content: "把下面这一天的对话压成一段客观备忘(150-250字):今天发生了什么事、做了什么决定、完成了什么、有什么约定或未完成事项、她的状态。只写事实脉络,不写抒情,不用列表。只输出这段话。\n\n【" + today + "的对话】\n" + msgs }
+        ], 400, 0.3, false);
+        const sm = (so.text || "").trim();
+        if (sm) await supabase.from("day_summaries").insert({ day: today, summary: sm });
+      }
+    } catch (e) {}
     res.json({ ok: true, content });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
