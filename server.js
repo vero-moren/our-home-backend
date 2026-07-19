@@ -117,7 +117,7 @@ async function obList() {
   if (obCache.items && Date.now() - obCache.at < 60000) return obCache.items;
   const data = await obReq("/api/buckets");
   const raw = Array.isArray(data) ? data : data.buckets || data.items || [];
-  obCache = { at: Date.now(), items: raw.map(obNorm) };
+  obCache = { at: Date.now(), items: raw.map(obNorm).filter(m => m.type !== "archived") };
   return obCache.items;
 }
 
