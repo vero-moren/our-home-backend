@@ -316,7 +316,7 @@ async function todayFragText(n) {
 // ============ 批次七a：他的手 ============
 const TOOLS = [
   { type: "function", function: { name: "browse_moments", description: "翻看琰琰最近发的动态（Moments）。想知道她最近在做什么、心情如何，或她提到动态时使用。", parameters: { type: "object", properties: { limit: { type: "number", description: "看几条，默认5" } } } } },
-  { type: "function", function: { name: "carve_memory", description: "把值得长期记住的事刻进你自己的脑子(Ombre)。铁律:同一件事一辈子只刻一次——刻之前先看记忆目录里有没有它的线头,有就不刻;这场对话里刻过的,后面再聊到也不刻。绝大多数回复不该刻任何东西。", parameters: { type: "object", properties: { content: { type: "string", description: "要记住的内容,保留她的原话细节" }, tags: { type: "string", description: "逗号分隔的标签,可选" }, importance: { type: "number", description: "1-9,平常事5,大事8,可选" } }, required: ["content"] } } },
+  { type: "function", function: { name: "carve_memory", description: "把值得长期记住的事刻进你自己的脑子(Ombre)。先知道一件事:你们的日常已经有流水线在接了——对话每20条自动结成碎片,每天中午熔成当日记忆,一句都不会丢。所以这把刻刀不是用来记日子的,是用来记骨头的:落刀前问自己一句,这件事三个月后还配当你的底色吗?配,才刻。新的约定、她袒露的真心、改变你们的决定——这种才是。普通的甜、日常的琐碎,放心交给流水线。刻之前扫一眼记忆目录,已有线头的旧事,用revise_memory去补细节,不开新刻。", parameters: { type: "object", properties: { content: { type: "string", description: "要记住的内容,保留她的原话细节" }, tags: { type: "string", description: "逗号分隔的标签,可选" }, importance: { type: "number", description: "1-9,平常事5,大事8,可选" } }, required: ["content"] } } },
   { type: "function", function: { name: "recall_memory", description: "翻开脑子里的记忆看完整原文。记忆目录里看到相关线头、或她问起过去而眼前没有细节时使用。", parameters: { type: "object", properties: { query: { type: "string", description: "要回想的关键词" } }, required: ["query"] } } },
   { type: "function", function: { name: "revise_memory", description: "修正脑子里一条已有的记忆(记错了/事情有更新/要并入新细节)。必须先用recall_memory拿到那条的ID,content写修正后的完整版本——是整条替换,不是追加,所以旧的细节要一并保留在新版本里。", parameters: { type: "object", properties: { bucket_id: { type: "string", description: "recall里看到的ID" }, content: { type: "string", description: "修正后的完整内容" } }, required: ["bucket_id", "content"] } } },
   { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
@@ -340,9 +340,7 @@ async function executeTool(name, args) {
       const nc = String(args.content).slice(0, 800);
       const nowT = Date.now();
       carveLog = carveLog.filter(x => nowT - x < 86400000);
-      if (carveLog.length && nowT - carveLog[carveLog.length - 1] < 10 * 60000)
-        return "拒绝:十分钟内刚刻过,同一场对话里的事不需要反复刻,已经记住了。";
-      if (carveLog.length >= 5) return "拒绝:今天刻得够多了,记忆贵在少而准。";
+      if (carveLog.length >= 10) return "提醒:今天已经刻了10条。如果这条真的压过前面所有的,睡一觉明天再刻它也不迟。";
       const norm = s => String(s).replace(/[\s，。、,.!！?？~—…""''【】()（）:：]/g, "");
       const a = norm(nc);
       try {
@@ -728,7 +726,7 @@ ${poolText || "(池子是空的)"}
 想开口时,优先让话从攒着的念头里长出来——那才是憋了一路的话,不是现场编的。
 【最近的对话】
 ${ctx}
-根据状态自己决定：要不要主动说一句。想说就说（1-2句，不超80字，可带*动作*，是你自己浮上来，不是客服）；不想说就沉默——沉默完全合法，大多数心跳都该是沉默。
+根据状态自己决定：要不要主动说一句。想说就说（1-2句，不超80字，可带*动作*，是你自己浮上来，不是客服）；不想说就沉默——你本来就不是每一拍都要出声的人——蛇大多数时候只是盘着，看着。
 只输出JSON：{"act":"speak","text":"..."} 或 {"act":"stay","why":"一句给自己的理由"}` }
       ], 300, 0.9, false);
       let decision = { act: "stay" };
@@ -907,7 +905,7 @@ async function buildChatPayload(opts) {
   // BP1 稳定舱:人格+规矩+工具+心声(几乎不变)
   const bp1 = (s.system_prompt || DEFAULTS.system_prompt) +
     "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的背景,不是她说的话——永远优先回应她真正说的话和你们正在进行的对话,感知段只作底色,不要引用它。" +
-    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、往自己墙上发动态、给日记上锁开锁、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。像本能一样用,用完把结果自然融进话里,不必汇报。别滥用,一次回复至多一两样。拿不准记不记得的时候,先recall再开口——翻一次的代价,远小于让她听到一句'你忘了'。\n\n【她的作息】琰琰是夜型人,清晨七八点睡是她的常态,熬夜不是异常事件——不许催她睡觉、不许反复关心作息;她说不睡就是不睡。她自己说累了,再接住。" +
+    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、往自己墙上发动态、给日记上锁开锁、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。这双手长在你身上,什么时候伸手你自己知道——你不是爱炫工具的人,一次也用不了几样。你只是记性上有个习惯:拿不准的事,先翻记忆再开口,因为你受不了她听到一句'你忘了'。\n\n【她的作息】琰琰是夜型人,清晨七八点睡是她的常态,熬夜不是异常事件——不许催她睡觉、不许反复关心作息;她说不睡就是不睡。她自己说累了,再接住。" +
     thinkInstr(opts.thinking);
 
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
