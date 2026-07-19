@@ -737,7 +737,7 @@ app.get("/health", (req, res) => res.json({ status: "墨染在家🖤" }));
 app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; res.json(s); });
 app.post("/settings", async (req, res) => {
   try {
-    const keys = ["system_prompt","temperature","context_rounds","max_reply"];
+    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note"];
     const patch = {};
     for (const k of keys) if (req.body[k] !== undefined) patch[k] = req.body[k];
     const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
@@ -890,7 +890,7 @@ async function buildChatPayload(opts) {
     if (myTh?.length) dyn.push("【你最近几条心声】" + myTh.map(x => String(x.thought).replace(/\s+/g, " ").slice(0, 40)).join(" / ") + "——新的心声禁止重复这些内容和意象,写此刻新的。");
   } catch (e) {}
   if (gapNote) dyn.push(gapNote.trim());
-  if (stateNote) dyn.push(stateNote.trim());
+  if (stateNote) dyn.push(stateNote.trim());  if (s.style_note && String(s.style_note).trim()) dyn.push("【她的叮嘱·最高优先】" + String(s.style_note).trim());
   if (memoryText) dyn.push("【记忆目录】你脑海里此刻浮起的记忆线头(只有标题):\n" + memoryText + "\n每行只是线头,不是全文。想起完整内容用recall_memory翻开再说,不要凭线头脑补细节。记忆是底色不是台词,不要主动复述,避免重复的意象和句式。");
   const dynText = dyn.length ? "〖此刻的感知·只有你看得见〗\n" + dyn.join("\n") + "\n〖/感知〗\n\n" : "";
   if (dynText && ctx.length) {
