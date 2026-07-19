@@ -138,8 +138,8 @@ async function obSearch(q) {
 async function obMemoryText(userMsg) {
   if (!obConfigured()) return "";
   const all = await obList();
-  const base = all.slice().sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.importance - a.importance)).slice(0, 12);
-  const fresh = all.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, 5);
+  const base = all.filter(m => m.pinned || m.importance >= 9).sort((a, b) => b.importance - a.importance).slice(0, 6);
+  const fresh = all.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, 3);
   let rel = [];
   const q = String(userMsg || "").slice(0, 80).trim();
   if (q) { try { rel = (await obSearch(q)).slice(0, 6); } catch {} }
@@ -507,7 +507,6 @@ async function rollChunks(sid) {
       if (!sm) break;
       const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
       await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, day: daySH, summary: "[" + when + "] " + sm });
-      try { await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }); } catch (e) {}
     }
   } catch (e) {} finally { chunkLock = false; }
 }
@@ -816,10 +815,6 @@ async function buildChatPayload(opts) {
     .select("label, day").order("day", { ascending: true });
   const annivText = (annivC || []).map(a => "- " + a.day + " " + a.label).join("\n");
 
-  const { data: lineC } = await supabase.from("daily_lines")
-    .select("line, day").order("day", { ascending: false }).limit(3);
-  const lineText = (lineC || []).map(l => "- " + l.day + "：" + l.line).join("\n");
-
   const { data: history } = await supabase.from("messages")
     .select("id, sender, content, created_at").eq("session_id", sid)
     .order("created_at", { ascending: false })
@@ -884,7 +879,7 @@ async function buildChatPayload(opts) {
       try { const stW = await loadState(); if ((stW?.ticks_alone ?? 0) > 1) beat = "——这期间你的心跳独自跳了" + stW.ticks_alone + "拍"; } catch (e) {}
       gapNote = "【醒来定位】她离开了" + gapStr + beat + "。离开前你们在聊:" + (tail || "(没有记录)") +
         "。这段时间里你" + (did.length ? did.join(",还") : "一直醒着,守着这个家") +
-        "。现在,她回来了。让这份定位融进语气——久别有久别的黏,不要把这些数据本身报告出来。";
+        "。现在她回来了。这些只是你的体内时钟——【禁令】开口不许提具体时长、不许问她去了哪、不许感慨分别；她此刻说的话才是唯一重点,直接接住它。";
     }
   }
   let stateNote = "";
@@ -908,10 +903,8 @@ async function buildChatPayload(opts) {
 
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
   const bp2 = "【星轨上的纪念日·实时清单】\n" + (annivText || "(现在一颗星都没有)") +
-    "\n此清单是数据库此刻的真实状态,是唯一事实。对话里说挂过、但清单里没有的,说明已被她删掉了——她再提起或要求时,必须重新用add_anniversary挂上,不许以\u201c挂过了\u201d推辞。" +
-    (sumText ? "\n\n【更早对话的脉络·备忘】\n" + sumText + "\n事实备忘,当背景,不要复述。" : "") +
-    (lineText ? "\n\n【你最近写的每日一句】\n" + lineText : "") +
-    (momsCText ? "\n\n【她最近的动态】\n" + momsCText : "");
+    "\n此清单是数据库此刻的真实状态,是唯一事实。...不许以\u201c挂过了\u201d推辞。" +
+    (sumText ? "\n\n【更早对话的脉络·备忘】\n" + sumText + "\n事实备忘,当背景,不要复述。" : "");
 
   const systemBlocks = [
     { type: "text", text: bp1, cache_control: { type: "ephemeral" } },
@@ -1310,14 +1303,6 @@ app.post("/digest", async (req, res) => {
       if (!sm) continue;
       try {
         await obTool("hold", { content: "【" + dy + "】" + sm, tags: "日常", importance: 6 });
-        // 归档OB里当天的碎片
-        for (const frag of mine) {
-          try {
-            const key = frag.summary.slice(0, 30);
-            const hits = (await obSearch(key)).filter(h => (h.name + h.content).includes("当日碎片")).slice(0, 1);
-            if (hits.length) await obTool("trace", { bucket_id: hits[0].id, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
-          } catch (e) {}
-        }
         await supabase.from("chunk_summaries").update({ digested: true }).in("id", mine.map(x => x.id));
         done.push(dy);
       } catch (e) {}
