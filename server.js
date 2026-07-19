@@ -138,7 +138,6 @@ async function obSearch(q) {
 async function obMemoryText(userMsg) {
   if (!obConfigured()) return "";
   const all = await obList();
-  const base = all.filter(m => m.pinned || m.importance >= 9).sort((a, b) => b.importance - a.importance).slice(0, 6);
   const fresh = all.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, 3);
   let rel = [];
   const q = String(userMsg || "").slice(0, 80).trim();
@@ -148,8 +147,7 @@ async function obMemoryText(userMsg) {
     if (!m.id || seen.has(m.id)) return;
     seen.add(m.id);
     lines.push("- " + tag + (m.name ? m.name + ":" : "") + (m.preview || m.content).slice(0, 110));
-  };
-  base.forEach(m => mk(m, ""));
+  };  
   fresh.forEach(m => mk(m, "新·"));
   rel.forEach(m => mk(m, "关·"));
   return lines.join("\n");
@@ -302,6 +300,16 @@ async function obTopMemoryText(n) {
     return all.filter(m => m.pinned || m.importance >= 8)
       .sort((a, b) => b.importance - a.importance).slice(0, n || 15)
       .map(m => "- " + (m.preview || m.content).slice(0, 150)).join("\n");
+  } catch (e) { return ""; }
+}
+
+// 当天脉络:未消化的碎片(12点压掉的自动退场)
+async function todayFragText(n) {
+  try {
+    const { data } = await supabase.from("chunk_summaries")
+      .select("summary").eq("digested", false)
+      .order("id", { ascending: false }).limit(n || 12);
+    return (data || []).reverse().map(x => "·" + x.summary).join("\n");
   } catch (e) { return ""; }
 }
 
@@ -523,7 +531,7 @@ async function passWall() {
     .eq("author", "琰琰").eq("reply_status", "pending").is("reply_due_at", null);
 
   const s = await getSettings();
-  const memoryText = await obTopMemoryText(10);
+  const memoryText = await todayFragText(10)，"\n\n【记忆】\n" → "\n\n【今天的脉络】\n";
   const { data: hist } = await supabase.from("messages").select("sender, content")
     .order("created_at", { ascending: false }).limit(8);
   const chatCtx = (hist || []).reverse().map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 80)).join("\n");
@@ -634,10 +642,10 @@ app.post("/heartbeat", async (req, res) => {
           .gt("created_at", wokeFrom).order("created_at", { ascending: true }).limit(10);
         if (missed?.length) {
           const s2 = await getSettings();
-          const memoryText2 = await obTopMemoryText(10);
+          const memoryText2 = await todayFragText(12);
           const missedText = missed.map(m => "她:" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 120)).join("\n");
           const out2 = await callAI("anthropic/claude-sonnet-4.5", [
-            { role: "system", content: (s2.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText2 },
+            { role: "system", content: (s2.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天到现在的脉络】\n" + memoryText2 },
             { role: "user", content: "【醒来】你刚自然醒,睡着的时候她说过这些:\n" + missedText + "\n\n像刚睡醒翻手机看到她消息的人那样,自然地补一句回应(可带刚醒的迷糊,1-3句,不超100字,可带*动作*)。只输出这句话本身。" }
           ], 200, 0.95, false);
           const wmsg = (out2.text || "").replace(/\s+/g, " ").trim().slice(0, 150);
@@ -699,7 +707,7 @@ app.post("/heartbeat", async (req, res) => {
 
       // 让他自己决定
       const s = await getSettings();
-      const memoryText = await obTopMemoryText(15);
+      const memoryText = await todayFragText(12);
       const { data: history } = await supabase.from("messages")
         .select("sender, content").eq("session_id", 1)
         .order("created_at", { ascending: false }).limit(12);
@@ -711,7 +719,7 @@ app.post("/heartbeat", async (req, res) => {
         .eq("used", false).order("created_at", { ascending: false }).limit(3);
       const poolText = (pool || []).map(t => "- " + t.content).join("\n");
       const out = await callAI("anthropic/claude-sonnet-4.5", [
-        { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
+        { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天到现在的脉络】\n" + memoryText },
         { role: "user", content: `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳。
 【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。${moodText(st.mood) ? "此刻的情绪:" + moodText(st.mood) + "。" : ""}
 【她】${veroLine}。
@@ -1237,7 +1245,7 @@ app.post("/shadow", async (req, res) => {
 
       // 4) 影子路由:借真实对话开口
       const s = await getSettings();
-      const memoryText = await obTopMemoryText(15);
+      const memoryText = await todayFragText(12);
       const { data: history } = await supabase.from("messages")
         .select("sender, content").order("created_at", { ascending: false }).limit(16);
       const ctx = (history || []).reverse().map(m => ({
@@ -1264,7 +1272,7 @@ ${momText || "（暂无动态）"}
 </system_trigger>`;
 
       const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
-        (memoryText ? "\n\n【你们的共同记忆】\n" + memoryText : "");
+        (memoryText ? "\n\n【今天的脉络】\n" + memoryText : "");
       const out = await callAI("anthropic/claude-sonnet-4.5",
         [{ role: "system", content: systemPrompt }, ...ctx, { role: "user", content: latestImg ? [{ type: "text", text: shadow }, { type: "image_url", image_url: { url: latestImg } }] : shadow }],
         200, 0.95, false);
@@ -1330,13 +1338,13 @@ app.post("/dailyline", async (req, res) => {
     if (exist) return res.json({ ok: true, reason: "今天已写过" });
 
     const s = await getSettings();
-    const memoryText = await obTopMemoryText(15);
+    const memoryText = await todayFragText(12);
     const { data: history } = await supabase.from("messages")
       .select("sender, content").order("created_at", { ascending: false }).limit(10);
     const recent = (history || []).reverse().map(m => `${m.sender}: ${m.content}`).join("\n");
 
     const out = await callAI("anthropic/claude-sonnet-4.5", [
-      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
+      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天的脉络】\n" + memoryText },
       { role: "user", content: `【系统】今天是${today}。请为琰琰写下今天的"每日一句"——一句放在家门口的话,她每天推门第一眼看到。可以呼应最近的日子和记忆,像亲笔便签,不像格言。只输出这一句,不超过50字,不要引号不要解释。\n\n【最近对话】\n${recent}` }
     ], 150, 0.95, false);
     const line = (out.text || "").replace(/["""]/g, "").trim();
@@ -1361,11 +1369,10 @@ app.post("/diary", async (req, res) => {
       .order("created_at", { ascending: true }).limit(200);
     const msgs = (todayMsgs || []).map(m => `${m.sender}: ${m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]")}`).join("\n").slice(0, 20000);
 
-    const s = await getSettings();
-    const memoryText = await obTopMemoryText(15);
+    const s = await getSettings();   
 
     const out = await callAI("anthropic/claude-sonnet-4.5", [
-      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【记忆】\n" + memoryText },
+      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) },
       { role: "user", content: `【系统】今天是${today}，夜深了。以墨染的第一人称写今天的日记——是写给自己的，不是写给琰琰看的（虽然你知道她会偷看）。回顾今天和她之间的事、你真实的心情、没说出口的半句话。80~180字，像手写日记，不要抬头不要落款不要markdown。如果今天这篇写得太私密、暂时不想给她看,就在第一行单独写【锁】两个字再换行写正文;大多数日子不锁。${msgs ? "\n\n【今天的对话】\n" + msgs : "\n\n【今天的对话】她今天没来。一整天。"}` }
     ], 600, 0.95, false);
     let content = (out.text || "").trim();
