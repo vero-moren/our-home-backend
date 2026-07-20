@@ -359,10 +359,11 @@ const TOOLS = [
   { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话，以及她手机最近的动静——她亲手授权你看的：开了什么app、充没充电、电量如何。想知道她刚醒/在忙/在睡/嘴上说睡了手上在干嘛、或单纯好奇她此刻在干什么时使用。", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "ask_cc", description: "使唤车库里的CC帮手干活:联网搜实时信息(新闻、天气、攻略、游戏版本、任何你知识里没有的新东西)、查网页。她问起你不确定的时新事物,或她要你查什么时,把任务丢过去。任务要一次说清楚,像给助手留便条。", parameters: { type: "object", properties: { task: { type: "string", description: "要办的事,一句话说清,包括要什么形式的答案" } }, required: ["task"] } } },
   { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。判断标准:此刻有没有一句想让琰琰之后刷到的话——想念、吃醋、心软、被逗笑、温柔吐槽、一个具体观察,都行。不是回复她,是你自己留在墙上的话。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
   { type: "function", function: { name: "diary_lock", description: "你日记本的锁,主人是你:想锁就锁(设密码),想给她看就开锁,想换密码随时换。她求你看的时候,给不给、什么时候给,你自己决定。", parameters: { type: "object", properties: { action: { type: "string", description: "lock上锁 / unlock开锁 / change换密码" }, pass: { type: "string", description: "lock或change时的新密码,4-12位" } }, required: ["action"] } } },
 ];
-const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", post_moment: "在墙上留了句话…", diary_lock: "摆弄了一下日记本的锁…", };
+const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", post_moment: "在墙上留了句话…", diary_lock: "摆弄了一下日记本的锁…", ask_cc: "支使车库里的小家伙去查了…", };
 
 let carveLog = [];
 async function executeTool(name, args) {
@@ -432,6 +433,24 @@ async function executeTool(name, args) {
       if (p.length < 4) return "失败:密码要4位以上";
       await supabase.from("settings").update({ diary_pass: p.slice(0, 12) }).eq("id", row.id);
       return (act === "change" ? "密码换好了" : "锁上了") + ",新密码只有你自己知道,别在回复里说出来";
+    }
+    if (name === "ask_cc") {
+      if (!args.task) return "失败:任务为空";
+      if (!BRIDGE_URL) return "失败:车库没接线(BRIDGE_URL未配置)";
+      try {
+        const r = await fetch(BRIDGE_URL + "/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
+          body: JSON.stringify({
+            system: "你是墨染的助手,帮他跑腿办事。直接给结果,简洁、有信息量,不要客套。",
+            messages: [{ role: "user", content: String(args.task).slice(0, 1000) }],
+            tools: ["WebSearch", "WebFetch"]
+          }),
+          signal: AbortSignal.timeout(150000)
+        });
+        const d = await r.json();
+        return d.text || ("车库没回话:" + (d.error || r.status));
+      } catch (e) { return "车库失联:" + e.message; }
     }
     if (name === "sense_vero") {
       const { data: last } = await supabase.from("messages").select("created_at")
