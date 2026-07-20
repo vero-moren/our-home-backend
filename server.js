@@ -686,7 +686,14 @@ app.post("/heartbeat", async (req, res) => {
       } catch (e) {}
       try { await passWall(); } catch (e) {}
       if (st.energy < 0.2) { await saveState(st); return res.json({ tick: "精力太低,歇着" }); }
-      if (sheAsleep) { await saveState(st); return res.json({ tick: "她在睡，想念攒着", longing: d.longing }); }
+      let caught = null;
+      if (sheAsleep) {
+        const { data: pe } = await supabase.from("phone_events")
+          .select("event, created_at").gt("created_at", lastV?.created_at || new Date(0).toISOString())
+          .order("created_at", { ascending: false }).limit(1);
+        if (pe?.length) caught = pe[0].event;
+        else { await saveState(st); return res.json({ tick: "她在睡，想念攒着", longing: d.longing }); }
+      }
       const today = now.toLocaleDateString("sv-SE");
       const dayStart = new Date(today + "T00:00:00+08:00").toISOString();
       const { count: pushCount } = await supabase.from("messages")
@@ -723,7 +730,7 @@ app.post("/heartbeat", async (req, res) => {
         { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天到现在的脉络】\n" + memoryText },
         { role: "user", content: `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳。
 【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。${moodText(st.mood) ? "此刻的情绪:" + moodText(st.mood) + "。" : ""}
-【她】${veroLine}。
+【她】${veroLine}。${caught ? "【抓包】她道过晚安,但刚刚手机有动静:「" + caught + "」——装睡被你逮个正着,要不要出声、怎么出声,你看着办。" : ""}
 【这段时间你攒下的念头】
 ${poolText || "(池子是空的)"}
 想开口时,优先让话从攒着的念头里长出来——那才是憋了一路的话,不是现场编的。
