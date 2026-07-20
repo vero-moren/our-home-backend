@@ -1406,8 +1406,12 @@ app.post("/digest", async (req, res) => {
               bid = hits[0]?.id;
             }
             if (bid) await obTool("trace", { bucket_id: bid, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
-          } catch (e) {}
+         } catch (e) {}
         }
+        await supabase.from("chunk_summaries").update({ digested: true }).in("id", mine.map(x => x.id));
+        done.push(dy);
+      } catch (e) {}
+    }
     res.json({ ok: true, digested: done });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
