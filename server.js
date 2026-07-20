@@ -33,7 +33,44 @@ async function getSettings() {
   return { ...DEFAULTS, ...(data || {}) };
 }
 
+// ============ 批次十一:双引擎 ============
+const BRIDGE_URL = String(process.env.BRIDGE_URL || "").replace(/\/$/, "");
+const BRIDGE_SECRET = process.env.BRIDGE_SECRET || "moren520";
+let bridgeDownUntil = 0, lastEngine = "";
+
+function flattenContent(c) {
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.map(p => p.type === "text" ? (p.text || "") : "").filter(Boolean).join("\n");
+  return "";
+}
+function bridgeEligible(messages, wantThinking, tools) {
+  if (!BRIDGE_URL || tools || wantThinking) return false;
+  if (Date.now() < bridgeDownUntil) return false;
+  return messages.every(m => typeof m.content === "string" ||
+    (Array.isArray(m.content) && m.content.every(p => p.type === "text")));
+}
+
 async function callAI(model, messages, maxTokens, temperature, wantThinking, tools) {
+  if (bridgeEligible(messages, wantThinking, tools)) {
+    try {
+      const system = messages.filter(m => m.role === "system").map(m => flattenContent(m.content)).join("\n\n");
+      const rest = messages.filter(m => m.role !== "system")
+        .map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: flattenContent(m.content) }));
+      const r = await fetch(BRIDGE_URL + "/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
+        body: JSON.stringify({ system, messages: rest }),
+        signal: AbortSignal.timeout(90000)
+      });
+      const d = await r.json();
+      if (r.ok && d.text) { lastEngine = "订阅⚡"; return { text: d.text, thinking: "", tool_calls: null }; }
+      throw new Error(d.error || ("桥返回" + r.status));
+    } catch (e) {
+      bridgeDownUntil = Date.now() + 10 * 60000;
+      console.log("[双引擎] 桥失手,降级OR:", e.message);
+    }
+  }
+  lastEngine = "OR";
   const body = { model, max_tokens: maxTokens, messages };
   if (temperature != null) body.temperature = Number(temperature);
   if (wantThinking) body.reasoning = { effort: "low" };
@@ -796,7 +833,7 @@ app.post("/sense/report", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get("/health", (req, res) => res.json({ status: "墨染在家🖤" }));
+app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: lastEngine || "还没开过口" }));
 
 // 设置读写
 app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; res.json(s); });
