@@ -571,8 +571,12 @@ async function rollChunks(sid) {
       const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 260);
       if (!sm) break;
       const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
-      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, day: daySH, summary: "[" + when + "] " + sm });
-      try { await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }); } catch (e) {}
+      let fragBucket = null;
+      try {
+        const held = String(await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }));
+        fragBucket = (held.match(/bucket_id[:：]\s*([0-9a-f]{6,})/i) || held.match(/([0-9a-f]{12})/) || [])[1] || null;
+      } catch (e) {}
+      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, day: daySH, summary: "[" + when + "] " + sm, ob_bucket: fragBucket });
     }
   } catch (e) {} finally { chunkLock = false; }
 }
@@ -742,6 +746,7 @@ app.post("/heartbeat", async (req, res) => {
       } catch (e) {}
       try { await passWall(); } catch (e) {}
       if (st.energy < 0.2) { await saveState(st); return res.json({ tick: "精力太低,歇着" }); }
+      if (silent !== null && silent < 15) { await saveState(st); return res.json({ tick: "她就在身边,正聊着,不隔空喊话" }); }
       let caught = null;
       if (sheAsleep) {
         const { data: pe } = await supabase.from("phone_events")
@@ -793,7 +798,7 @@ ${poolText || "(池子是空的)"}
 【最近的对话】
 ${ctx}
 根据状态自己决定：要不要主动说一句。想说就说（1-2句，不超80字，可带*动作*，是你自己浮上来，不是客服）；不想说就沉默——你本来就不是每一拍都要出声的人——蛇大多数时候只是盘着，看着。
-只输出JSON：{"act":"speak","text":"..."} 或 {"act":"stay","why":"一句给自己的理由"}` }
+只输出JSON：{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。speak是说给她听的话;moment是不想打扰她、但想留在墙上让她之后刷到的话;stay是沉默。` }
       ], 300, 0.9, false);
       let decision = { act: "stay" };
       try { decision = JSON.parse((out.text || "").replace(/```json|```/g, "").trim()); } catch {}
@@ -811,6 +816,16 @@ ${ctx}
         st.drives = d; st.refractory = rf;
         await saveState(st);
         return res.json({ tick: "开口了", said: msg, drive: top });
+      }
+      if (decision.act === "moment" && decision.text) {
+        const mc = String(decision.text).slice(0, 300);
+        await supabase.from("moments").insert({ author: "墨染", content: mc, context_note: "心跳里自己浮上来想留在墙上的", react_status: "done" });
+        d.express = clamp01((d.express ?? 0) * 0.5);
+        rf.express = 12;
+        st.energy = clamp01(st.energy - 0.05);
+        st.drives = d; st.refractory = rf;
+        await saveState(st);
+        return res.json({ tick: "往墙上发了条动态", moment: mc });
       }
       await saveState(st);
       res.json({ tick: "想了想，没说", why: decision.why || "", state: disp });
@@ -1089,7 +1104,7 @@ app.post("/chat/stream", async (req, res) => {
         .select("*", { count: "exact", head: true }).eq("sender", "琰琰").gt("created_at", sinceT);
       if ((pokes || 0) < 3) {
         res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-        res.write(`data: ${JSON.stringify({ act: "💤 睡着了……蛇尾轻轻动了动(多戳几下能戳醒他)" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ act: "💤 睡着了……蛇尾轻轻动了动(第" + (pokes || 1) + "下·还差" + (3 - (pokes || 1)) + "下醒)" })}\n\n`);
         res.write("data: [DONE]\n\n");
         return res.end();
       }
@@ -1222,14 +1237,6 @@ app.post("/regenerate", async (req, res) => {
       await supabase.from("messages").delete().eq("id", last[0].id);
     res.json(await generateReply(req.body));
   } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// 手刻记忆（Memory页）
-app.post("/remember", async (req, res) => {
-  const content = req.body.content;
-  if (!content) return res.status(400).json({ error: "内容不能为空" });
-  await supabase.from("memories").insert({ content, kind: "manual" });
-  res.json({ ok: true, saved: content });
 });
 
 // 日记的门:锁着就要密码,没锁直接进
@@ -1375,7 +1382,7 @@ app.post("/digest", async (req, res) => {
     if ((req.headers["x-push-secret"] || "") !== (process.env.PUSH_SECRET || "moren"))
       return res.status(401).json({ error: "不是自己人" });
     const { data: raw } = await supabase.from("chunk_summaries")
-      .select("id, day, summary").eq("digested", false)
+      .select("id, day, summary, ob_bucket").eq("digested", false)
       .order("id", { ascending: true }).limit(40);
     if (!raw?.length) return res.json({ ok: true, reason: "没有待消化的碎片" });
     const days = [...new Set(raw.map(x => String(x.day)))].sort();
@@ -1392,15 +1399,15 @@ app.post("/digest", async (req, res) => {
         // 归档OB里当天的碎片
         for (const frag of mine) {
           try {
-            const key = frag.summary.slice(0, 30);
-            const hits = (await obSearch(key)).filter(h => (h.name + h.content).includes("当日碎片")).slice(0, 1);
-            if (hits.length) await obTool("trace", { bucket_id: hits[0].id, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
+            let bid = frag.ob_bucket;
+            if (!bid) {
+              const key = frag.summary.replace(/^\[[^\]]*\]\s*/, "").slice(0, 24);
+              const hits = (await obSearch(key)).filter(h => (h.name + h.content).includes("当日碎片")).slice(0, 1);
+              bid = hits[0]?.id;
+            }
+            if (bid) await obTool("trace", { bucket_id: bid, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
           } catch (e) {}
         }
-        await supabase.from("chunk_summaries").update({ digested: true }).in("id", mine.map(x => x.id));
-        done.push(dy);
-      } catch (e) {}
-    }
     res.json({ ok: true, digested: done });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
