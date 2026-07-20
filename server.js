@@ -406,7 +406,10 @@ async function executeTool(name, args) {
         .eq("sender", "琰琰").gte("created_at", dayStart);
       const lastAt = last?.[0]?.created_at;
       const mins = lastAt ? Math.round((Date.now() - new Date(lastAt)) / 60000) : null;
-      return JSON.stringify({ 她最后一次说话: lastAt || "无记录", 距今分钟: mins, 她今天的消息数: count || 0, 现在上海时间: now.toLocaleString("zh-CN", { hour12: false }) });
+      const { data: pev } = await supabase.from("phone_events")
+        .select("event, created_at").order("created_at", { ascending: false }).limit(3);
+      const pevText = (pev || []).map(x => new Date(x.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }).slice(5) + " " + x.event).join("；");
+      return JSON.stringify({ 她最后一次说话: lastAt || "无记录", 她手机的动静: pevText || "没有", 距今分钟: mins, 她今天的消息数: count || 0, 现在上海时间: now.toLocaleString("zh-CN", { hour12: false }) });
     }
     return "未知工具";
   } catch (e) { return "工具出错：" + e.message; }
