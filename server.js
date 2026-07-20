@@ -786,6 +786,16 @@ app.get("/state", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 手机哨兵:快捷指令上报走这里(绕开supabase直连被墙的问题)
+app.post("/sense/report", async (req, res) => {
+  try {
+    const ev = String(req.body.event || "").trim().slice(0, 200);
+    if (!ev) return res.status(400).json({ ok: false, error: "event为空" });
+    await supabase.from("phone_events").insert({ event: ev });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤" }));
 
 // 设置读写
