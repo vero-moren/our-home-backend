@@ -1123,7 +1123,9 @@ app.post("/chat/prepare", async (req, res) => {
       return m;
     });
 
-    res.json({ system, messages, sid: sessionId });
+    const _ts = String(Date.now());
+    const _sig = crypto.createHmac("sha256", BRIDGE_SECRET).update(_ts).digest("hex").slice(0, 16);
+    res.json({ system, messages, sid: sessionId, bridgeToken: _ts + "." + _sig });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
