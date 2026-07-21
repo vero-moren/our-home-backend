@@ -1210,6 +1210,28 @@ app.post("/chat/stream", async (req, res) => {
   }
 });
 
+
+// 书房·非流式（前端简单版用这个）
+app.post("/study", async (req, res) => {
+  const message = (req.body.message || "").trim();
+  const sessionId = req.body.sessionId || null;
+  const system = req.body.system || (await getSettings()).system_prompt || DEFAULTS.system_prompt;
+  if (!message) return res.status(400).json({ error: "消息不能为空" });
+  if (!BRIDGE_URL) return res.status(503).json({ error: "桥没接线" });
+  try {
+    const r = await fetch(BRIDGE_URL + "/study", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
+      body: JSON.stringify({ system, message, sessionId }),
+      signal: AbortSignal.timeout(120000)
+    });
+    const d = await r.json();
+    res.json(d);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ 批次十三·13a:书房——Render转发桥的CC大脑流式 ============
 app.post("/study/stream", async (req, res) => {
   const message = (req.body.message || "").trim();
