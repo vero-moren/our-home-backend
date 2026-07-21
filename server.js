@@ -1243,6 +1243,7 @@ app.post("/study/stream", async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Content-Encoding", "identity");
   res.flushHeaders?.();
 
   const controller = new AbortController();
