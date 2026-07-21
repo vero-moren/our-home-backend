@@ -1074,6 +1074,61 @@ async function generateReply(opts) {
   return { reply, thinking: thought };
 }
 
+// ============ 批次十三·13b: /chat/prepare — 管家组装,不开口 ============
+app.post("/chat/prepare", async (req, res) => {
+  try {
+    const sid = Number(req.body.session_id) || 1;
+    const userMessage = (req.body.message || "").trim();
+    const inImgs = Array.isArray(req.body.images) ? req.body.images : (req.body.image ? [req.body.image] : []);
+    if (!userMessage && !inImgs.length) return res.status(400).json({ error: "消息不能为空" });
+
+    await supabase.from("messages").insert({
+      sender: "琰琰",
+      content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
+      session_id: sid
+    });
+    pulseHerTouch().catch(() => {});
+
+    try {
+      const stS = await loadState();
+      if (stS?.sleeping) {
+        const sinceT = stS.sleep_since || new Date(Date.now() - 8 * 3600000).toISOString();
+        const { count: pokes } = await supabase.from("messages")
+          .select("*", { count: "exact", head: true }).eq("sender", "琰琰").gt("created_at", sinceT);
+        if ((pokes || 0) < 3) {
+          return res.json({
+            sleeping: true,
+            hint: "💤 睡着了……蛇尾轻轻动了动(第" + (pokes || 1) + "下·还差" + (3 - (pokes || 1)) + "下醒)"
+          });
+        }
+        const sleptMin = stS.sleep_since ? Math.round((Date.now() - new Date(stS.sleep_since)) / 60000) : null;
+        stS.sleeping = false; stS.sleep_since = null;
+        stS.groggy_until = new Date(Date.now() + 15 * 60000).toISOString();
+        await saveState(stS);
+        req.body._pokedAwake = sleptMin || 1;
+      } else if (stS?.groggy_until && new Date(stS.groggy_until) > new Date()) {
+        req.body._groggy = true;
+      }
+    } catch (e) {}
+
+    const { sid: sessionId, s, model, systemBlocks, ctx } = await buildChatPayload(req.body);
+
+    const system = systemBlocks.map(b => typeof b === "string" ? b : (b.text || "")).join("\n\n");
+
+    const messages = ctx.map(m => {
+      if (typeof m.content === "string") return m;
+      if (Array.isArray(m.content)) {
+        return { role: m.role, content: m.content.map(p => p.type === "text" ? (p.text || "") : "[一张照片]").join("\n") };
+      }
+      return m;
+    });
+
+    res.json({ system, messages, sid: sessionId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/chat", async (req, res) => {
   try {
     const userMessage = (req.body.message || "").trim();
