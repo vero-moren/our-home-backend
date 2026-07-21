@@ -1210,6 +1210,50 @@ app.post("/chat/stream", async (req, res) => {
   }
 });
 
+// ============ 批次十三·13a:书房——Render转发桥的CC大脑流式 ============
+app.post("/study/stream", async (req, res) => {
+  const message = (req.body.message || "").trim();
+  const sessionId = req.body.sessionId || null;   // 前端存着上一轮的id,续接同一个大脑
+  const system = req.body.system || (await getSettings()).system_prompt || DEFAULTS.system_prompt;
+  if (!message) return res.status(400).json({ error: "消息不能为空" });
+  if (!BRIDGE_URL) return res.status(503).json({ error: "桥没接线(BRIDGE_URL未配置)" });
+
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const controller = new AbortController();
+  req.on("close", () => controller.abort());
+
+  try {
+    const upstream = await fetch(BRIDGE_URL + "/study-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
+      body: JSON.stringify({ system, message, sessionId }),
+      signal: controller.signal
+    });
+    if (!upstream.ok || !upstream.body) {
+      res.write(`data: ${JSON.stringify({ error: "桥没回话:" + upstream.status })}\n\n`);
+      return res.end();
+    }
+    // 把桥吐的每一块,原样flush给前端
+    const reader = upstream.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(dec.decode(value, { stream: true }));   // 桥已是SSE格式,直接透传
+    }
+    res.end();
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+      res.end();
+    }
+  }
+});
+
 // 编辑你的最后一句并让他重答
 app.post("/edit", async (req, res) => {
   try {
