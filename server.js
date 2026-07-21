@@ -1243,7 +1243,8 @@ app.post("/study/stream", async (req, res) => {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      res.write(dec.decode(value, { stream: true }));   // 桥已是SSE格式,直接透传
+      res.write(dec.decode(value, { stream: true }));
+      if (res.flush) res.flush();
     }
     res.end();
   } catch (e) {
