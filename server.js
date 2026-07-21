@@ -1129,6 +1129,23 @@ app.post("/chat/prepare", async (req, res) => {
   }
 });
 
+// ============ 批次十三·13b: /chat/archive — 管家存档 ============
+app.post("/chat/archive", async (req, res) => {
+  try {
+    const { reply, thought, sid } = req.body || {};
+    if (!reply) return res.status(400).json({ error: "reply为空" });
+    const sessionId = Number(sid) || 1;
+    await supabase.from("messages").insert({
+      sender: "墨染", content: reply, thought: thought || null, session_id: sessionId
+    });
+    pulseEmotion(sessionId).catch(() => {});
+    rollChunks(sessionId).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/chat", async (req, res) => {
   try {
     const userMessage = (req.body.message || "").trim();
