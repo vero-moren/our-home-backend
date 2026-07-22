@@ -889,6 +889,9 @@ app.post("/mcp", async (req, res) => {
   }
 });
 
+app.get("/mcp", (req, res) => res.status(405).set("Allow", "POST").end());
+app.delete("/mcp", (req, res) => res.status(405).set("Allow", "POST").end());
+
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: lastEngine || "还没开过口" }));
 
 // 设置读写
