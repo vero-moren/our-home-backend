@@ -561,14 +561,14 @@ async function rollChunks(sid) {
       }
       const { data: fresh } = await supabase.from("messages")
         .select("id, sender, content, created_at").eq("session_id", sid)
-        .gt("id", from).order("id", { ascending: true }).limit(20);
-      if (!fresh || fresh.length < 20) break;
+        .gt("id", from).order("id", { ascending: true }).limit(40);
+      if (!fresh || fresh.length < 40) break;
       const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 150)).join("\n");
       const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
       const out = await callAI("anthropic/claude-sonnet-4.5", [
-        { role: "user", content: "把这20条对话压成2-3句备忘,以\u201c琰琰\u201d和\u201c墨染\u201d为主语记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论:\n" + block + "\n只输出备忘本身。" }
-      ], 160, 0.3, false);
-      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 260);
+      { role: "user", content: "把这40条对话压成4-6句备忘,以\u201c琰琰\u201d和\u201c墨染\u201d为主语记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论,同一件事只记一次。【铁律】游戏名、人名、地名、专有名词只许照抄对话原文,对话里没出现过的名词一个都不许写,不许推断不许脑补:\n" + block + "\n只输出备忘本身。" }
+      ], 300, 0.3, false);
+      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 400);
       if (!sm) break;
       const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
       let fragBucket = null;
@@ -576,7 +576,7 @@ async function rollChunks(sid) {
         const held = String(await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }));
         fragBucket = (held.match(/bucket_id[:：]\s*([0-9a-f]{6,})/i) || held.match(/([0-9a-f]{12})/) || [])[1] || null;
       } catch (e) {}
-      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[19].id, day: daySH, summary: "[" + when + "] " + sm, ob_bucket: fragBucket });
+      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[39].id, day: daySH, summary: "[" + when + "] " + sm, ob_bucket: fragBucket });
     }
   } catch (e) {} finally { chunkLock = false; }
 }
@@ -1532,8 +1532,8 @@ app.post("/digest", async (req, res) => {
     for (const dy of days.slice(0, 3)) {
       const mine = raw.filter(x => String(x.day) === dy);
       const out = await callAI("anthropic/claude-sonnet-4.5", [
-        { role: "user", content: "以下是" + dy + "琰琰和墨染对话的分段备忘,合并成一段完整的当日记忆(150-280字):当天发生的事、决定、约定、她的状态,按时间脉络写,不抒情:\n" + mine.map(x => x.summary).join("\n") + "\n只输出这段记忆。" }
-      ], 450, 0.3, false);
+      { role: "user", content: "以下是" + dy + "琰琰和墨染对话的分段备忘,合并成一段完整的当日记忆(200-400字):当天发生的事、决定、约定、她的状态,按时间脉络写,不抒情。【铁律】专有名词只许照抄备忘原文,备忘里没有的名词不许出现,不许推断补全:\n" + mine.map(x => x.summary).join("\n") + "\n只输出这段记忆。" }
+      ], 600, 0.3, false);
       const sm = (out.text || "").trim();
       if (!sm) continue;
       try {
