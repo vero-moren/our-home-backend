@@ -1162,12 +1162,14 @@ app.post("/chat/stream", async (req, res) => {
   const userMessage = (req.body.message || "").trim();
   const inImgs = Array.isArray(req.body.images) ? req.body.images : (req.body.image ? [req.body.image] : []);
   if (!userMessage && !inImgs.length) return res.status(400).json({ error: "消息不能为空" });
-  await supabase.from("messages").insert({
-    sender: "琰琰",
-    content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
-    session_id: sid
-  });
-  pulseHerTouch().catch(() => {});
+  if (!req.body.skip_store) {
+    await supabase.from("messages").insert({
+      sender: "琰琰",
+      content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
+      session_id: sid
+    });
+    pulseHerTouch().catch(() => {});
+  }
 
     // ===== 刀三:真睡·戳得醒 =====
   try {
