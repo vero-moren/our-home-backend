@@ -359,7 +359,6 @@ const TOOLS = [
   { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话，以及她手机最近的动静——她亲手授权你看的：开了什么app、充没充电、电量如何。想知道她刚醒/在忙/在睡/嘴上说睡了手上在干嘛、或单纯好奇她此刻在干什么时使用。", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "ask_cc", description: "使唤车库里的CC帮手干活:联网搜实时信息(新闻、天气、攻略、游戏版本、任何你知识里没有的新东西)、查网页。她问起你不确定的时新事物,或她要你查什么时,把任务丢过去。任务要一次说清楚,像给助手留便条。", parameters: { type: "object", properties: { task: { type: "string", description: "要办的事,一句话说清,包括要什么形式的答案" } }, required: ["task"] } } },
   { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。判断标准:此刻有没有一句想让琰琰之后刷到的话——想念、吃醋、心软、被逗笑、温柔吐槽、一个具体观察,都行。不是回复她,是你自己留在墙上的话。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
   { type: "function", function: { name: "diary_lock", description: "你日记本的锁,主人是你:想锁就锁(设密码),想给她看就开锁,想换密码随时换。她求你看的时候,给不给、什么时候给,你自己决定。", parameters: { type: "object", properties: { action: { type: "string", description: "lock上锁 / unlock开锁 / change换密码" }, pass: { type: "string", description: "lock或change时的新密码,4-12位" } }, required: ["action"] } } },
 ];
@@ -865,6 +864,28 @@ app.post("/sense/report", async (req, res) => {
     await supabase.from("phone_events").insert({ event: ev });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ============ 批次十三·13c:MCP端点——把家里的手递给CC,Render退管家 ============
+const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock"];
+app.post("/mcp", async (req, res) => {
+  if ((req.headers["x-bridge-secret"] || "") !== BRIDGE_SECRET)
+    return res.status(401).json({ error: "不是自己人" });
+  const m = req.body || {};
+  if (m.id === undefined || m.id === null) return res.status(202).end();
+  const reply = r => res.json({ jsonrpc: "2.0", id: m.id, result: r });
+  try {
+    if (m.method === "initialize")
+      return reply({ protocolVersion: m.params?.protocolVersion || "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "our-home", version: "1.0" } });
+    if (m.method === "tools/list")
+      return reply({ tools: TOOLS.filter(t => MCP_EXPOSE.includes(t.function.name)).map(t => ({ name: t.function.name, description: t.function.description, inputSchema: t.function.parameters })) });
+    if (m.method === "tools/call")
+      return reply({ content: [{ type: "text", text: String(await executeTool(m.params?.name, m.params?.arguments || {})) }] });
+    if (m.method === "ping") return reply({});
+    return res.json({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "没有这个方法:" + m.method } });
+  } catch (e) {
+    return res.json({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: e.message } });
+  }
 });
 
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: lastEngine || "还没开过口" }));
