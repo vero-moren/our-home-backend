@@ -1113,7 +1113,8 @@ app.post("/chat/prepare", async (req, res) => {
 
     const { sid: sessionId, s, model, systemBlocks, ctx } = await buildChatPayload(req.body);
 
-    const system = systemBlocks.map(b => typeof b === "string" ? b : (b.text || "")).join("\n\n");
+    let system = systemBlocks.map(b => typeof b === "string" ? b : (b.text || "")).join("\n\n");
+    if (s.style_note && String(s.style_note).trim()) system += "\n\n【她的叮嘱·最高优先·凌驾一切】\n" + String(s.style_note).trim();
 
     const messages = ctx.map(m => {
       if (typeof m.content === "string") return m;
