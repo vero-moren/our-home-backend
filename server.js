@@ -221,7 +221,7 @@ app.get("/ombre/buckets/:id", async (req, res) => {
 
 // ============ 批次八收官:OB写线(OAuth钥匙 + MCP的手) ============
 const crypto = require("crypto");
-const OB_REDIRECT = "https://our-home-backend-5zsm.onrender.com/ob/callback";
+const OB_REDIRECT = "https://moren-backend.zeabur.app/ob/callback";
 let obAuthCache = null, mcpSession = null, mcpId = 0;
 
 async function obAuthLoad() {
