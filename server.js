@@ -869,9 +869,10 @@ app.post("/sense/report", async (req, res) => {
 // ============ 批次十三·13c:MCP端点——把家里的手递给CC,Render退管家 ============
 const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock"];
 app.post("/mcp", async (req, res) => {
-  if ((req.headers["x-bridge-secret"] || "") !== BRIDGE_SECRET)
-    return res.status(401).json({ error: "不是自己人" });
   const m = req.body || {};
+  const okDoor = (req.headers["x-bridge-secret"] || "") === BRIDGE_SECRET;
+  console.log("[MCP门铃]" + (okDoor ? "" : "⛔无门票") + " " + (m.method || "?") + (m.method === "tools/call" ? " → " + (m.params?.name || "?") : ""));
+  if (!okDoor) return res.status(401).json({ error: "不是自己人" });
   if (m.id === undefined || m.id === null) return res.status(202).end();
   const reply = r => res.json({ jsonrpc: "2.0", id: m.id, result: r });
   try {
