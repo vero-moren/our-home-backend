@@ -1096,10 +1096,9 @@ app.post("/chat/prepare", async (req, res) => {
         const { count: pokes } = await supabase.from("messages")
           .select("*", { count: "exact", head: true }).eq("sender", "琰琰").gt("created_at", sinceT);
         if ((pokes || 0) < 3) {
-          return res.json({
-            sleeping: true,
-            hint: "💤 睡着了……蛇尾轻轻动了动(第" + (pokes || 1) + "下·还差" + (3 - (pokes || 1)) + "下醒)"
-          });
+          const hint = "💤 睡着了……蛇尾轻轻动了动";
+          await supabase.from("messages").insert({ sender: "墨染", content: hint, session_id: sid });
+          return res.json({ sleeping: true, hint });
         }
         const sleptMin = stS.sleep_since ? Math.round((Date.now() - new Date(stS.sleep_since)) / 60000) : null;
         stS.sleeping = false; stS.sleep_since = null;
