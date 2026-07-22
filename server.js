@@ -870,7 +870,7 @@ app.post("/sense/report", async (req, res) => {
 const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock"];
 app.post("/mcp", async (req, res) => {
   const m = req.body || {};
-  const okDoor = (req.headers["x-bridge-secret"] || "") === BRIDGE_SECRET;
+  const okDoor = (req.headers["x-bridge-secret"] || "") === BRIDGE_SECRET || String(req.query.key || "") === BRIDGE_SECRET;
   console.log("[MCP门铃]" + (okDoor ? "" : "⛔无门票") + " " + (m.method || "?") + (m.method === "tools/call" ? " → " + (m.params?.name || "?") : ""));
   if (!okDoor) return res.status(401).json({ error: "不是自己人" });
   if (m.id === undefined || m.id === null) return res.status(202).end();
