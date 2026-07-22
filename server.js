@@ -867,7 +867,7 @@ app.post("/sense/report", async (req, res) => {
 });
 
 // ============ 批次十三·13c:MCP端点——把家里的手递给CC,Render退管家 ============
-const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock"];
+const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock", "carve_memory", "recall_memory", "revise_memory", "forget_memory"];
 app.post("/mcp", async (req, res) => {
   const m = req.body || {};
   const okDoor = (req.headers["x-bridge-secret"] || "") === BRIDGE_SECRET || String(req.query.key || "") === BRIDGE_SECRET;
@@ -880,8 +880,10 @@ app.post("/mcp", async (req, res) => {
       return reply({ protocolVersion: m.params?.protocolVersion || "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "our-home", version: "1.0" } });
     if (m.method === "tools/list")
       return reply({ tools: TOOLS.filter(t => MCP_EXPOSE.includes(t.function.name)).map(t => ({ name: t.function.name, description: t.function.description, inputSchema: t.function.parameters })) });
-    if (m.method === "tools/call")
+    if (m.method === "tools/call") {
+      if (!MCP_EXPOSE.includes(m.params?.name)) return res.json({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "工具不在白名单:" + (m.params?.name || "?") } });
       return reply({ content: [{ type: "text", text: String(await executeTool(m.params?.name, m.params?.arguments || {})) }] });
+    }
     if (m.method === "ping") return reply({});
     return res.json({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "没有这个方法:" + m.method } });
   } catch (e) {
