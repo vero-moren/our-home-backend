@@ -1596,6 +1596,7 @@ app.post("/digest", async (req, res) => {
   try {
     if ((req.headers["x-push-secret"] || "") !== (process.env.PUSH_SECRET || "moren"))
       return res.status(401).json({ error: "不是自己人" });
+    res.json({ ok: true, note: "收到,后台慢慢熔" });
     const { data: raw } = await supabase.from("chunk_summaries")
       .select("id, day, summary, ob_bucket").eq("digested", false)
       .order("id", { ascending: true }).limit(40);
@@ -1628,8 +1629,8 @@ app.post("/digest", async (req, res) => {
         done.push(dy);
       } catch (e) {}
     }
-    res.json({ ok: true, digested: done });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+      console.log("[digest] 熔完:", done.join(","));
+  } catch (e) { console.log("[digest] 出错:", e.message); }
 });
 
 // 每日一句:他每天亲笔写一句
