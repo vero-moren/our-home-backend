@@ -1659,7 +1659,8 @@ app.post("/digest", async (req, res) => {
               bid = hits[0]?.id;
             }
             if (bid) await obTool("trace", { bucket_id: bid, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
-         } catch (e) {}
+            else console.log("[digest] 孤儿碎片没找到桶:", frag.id, frag.summary.slice(0, 30));
+         } catch (e) { console.log("[digest] 归档失败:", frag.id, e.message); }
         }
         await supabase.from("chunk_summaries").update({ digested: true }).in("id", mine.map(x => x.id));
         done.push(dy);
