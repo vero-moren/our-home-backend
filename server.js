@@ -1165,9 +1165,10 @@ app.post("/chat/prepare", async (req, res) => {
     const imgUrls = [];
     for (const u of inImgs) {
       try {
-        const m64 = String(u).match(/^data:(image\/\w+);base64,(.+)$/);
+        const m64 = String(u).match(/^data:([\w.+-]+\/[\w.+-]+);base64,(.+)$/);
         if (!m64) { imgUrls.push(u); continue; }
-        const ext = m64[1].split("/")[1].replace("jpeg", "jpg");
+        const extMap = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "application/pdf": "pdf", "text/plain": "txt", "text/markdown": "md", "text/csv": "csv" };
+        const ext = extMap[m64[1]] || (m64[1].split("/")[1] || "bin").slice(0, 8);
         const fn = "chat/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + ext;
         const { error: upErr } = await supabase.storage.from("chat-media").upload(fn, Buffer.from(m64[2], "base64"), { contentType: m64[1] });
         if (upErr) { imgUrls.push(u); continue; }
@@ -1211,7 +1212,7 @@ app.post("/chat/prepare", async (req, res) => {
     const messages = ctx.map(m => {
       if (typeof m.content === "string") return m;
       if (Array.isArray(m.content)) {
-        return { role: m.role, content: m.content.map(p => p.type === "text" ? (p.text || "") : (p.image_url?.url && /^https?:/.test(p.image_url.url) ? "〔她发来一张照片,URL: " + p.image_url.url + " 〕" : "[一张照片]")).join("\n") };
+        return { role: m.role, content: m.content.map(p => p.type === "text" ? (p.text || "") : (p.image_url?.url && /^https?:/.test(p.image_url.url) ? (/\.(pdf|txt|md|csv)(\?|$)/i.test(p.image_url.url) ? "〔她发来一个文件,URL: " + p.image_url.url + " 〕" : "〔她发来一张照片,URL: " + p.image_url.url + " 〕") : "[一张照片]")).join("\n") };
       }
       return m;
     });
