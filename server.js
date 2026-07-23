@@ -1600,7 +1600,8 @@ app.post("/digest", async (req, res) => {
       .select("id, day, summary, ob_bucket").eq("digested", false)
       .order("id", { ascending: true }).limit(40);
     if (!raw?.length) return res.json({ ok: true, reason: "没有待消化的碎片" });
-    const days = [...new Set(raw.map(x => String(x.day)))].sort();
+    const todaySH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE");
+    const days = [...new Set(raw.map(x => String(x.day)))].filter(d => d < todaySH).sort();
     const done = [];
     for (const dy of days.slice(0, 3)) {
       const mine = raw.filter(x => String(x.day) === dy);
