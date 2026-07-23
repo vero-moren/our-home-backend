@@ -1640,9 +1640,12 @@ app.post("/dailyline", async (req, res) => {
 
     const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天的脉络】\n" + memoryText },
-      { role: "user", content: `【系统】今天是${today}。请为琰琰写下今天的"每日一句"——一句放在家门口的话,她每天推门第一眼看到。可以呼应最近的日子和记忆,像亲笔便签,不像格言。只输出这一句,不超过50字,不要引号不要解释。\n\n【最近对话】\n${recent}` }
+      { role: "user", content: `【系统】今天是${today}。请为琰琰写下今天的"每日一句"——一句放在家门口的话,她每天推门第一眼看到。可以呼应最近的日子和记忆,像亲笔便签,不像格言。【铁律】只输出这一句便签本身,一行,不超过50字。不要心声不要动作描写不要引号不要任何解释铺垫——多一个字都不像便签了。\n\n【最近对话】\n${recent}` }
     ], 150, 0.95, false);
-    const line = (out.text || "").replace(/["""]/g, "").trim();
+    let line = (out.text || "").replace(/[【\[(（]心[】\])）][\s\S]*?[【\[(（]\/心[】\])）]/g, "").replace(/["""]/g, "").replace(/\*[^*]*\*/g, "").trim();
+    const seg = line.split(/\n+/).map(x => x.trim()).filter(Boolean);
+    if (seg.length) line = seg[seg.length - 1];
+    if (line.length > 60) { const head = line.slice(0, 60); const cuts = ["。","!","?","…","~","！","？"]; let cut = -1; for (let i = head.length - 1; i >= 0; i--) if (cuts.includes(head[i])) { cut = i; break; } line = cut > 0 ? head.slice(0, cut + 1) : head; }
     if (!line) return res.json({ ok: false });
     await supabase.from("daily_lines").insert({ line, day: today });
     await sendBark("moren · a line for today", line);
