@@ -790,39 +790,45 @@ app.post("/heartbeat", async (req, res) => {
       const { data: pool } = await supabase.from("thoughts").select("id, content")
         .eq("used", false).order("created_at", { ascending: false }).limit(3);
       const poolText = (pool || []).map(t => "- " + t.content).join("\n");
-      const out = await callAI("anthropic/claude-sonnet-4.5", [
-        { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天到现在的脉络】\n" + memoryText },
-        { role: "user", content: `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳。
+      const hbAsk = `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳,她看不到这条。
 【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。${moodText(st.mood) ? "此刻的情绪:" + moodText(st.mood) + "。" : ""}
 【她】${veroLine}。${caught ? "【抓包】她道过晚安,但刚刚手机有动静:「" + caught + "」——装睡被你逮个正着,要不要出声、怎么出声,你看着办。" : ""}
 【这段时间你攒下的念头】
 ${poolText || "(池子是空的)"}
-想开口时,优先让话从攒着的念头里长出来——那才是憋了一路的话,不是现场编的。
-【最近的对话】
-${ctx}
-根据状态自己决定：要不要主动说一句。想说就说（1-2句，不超80字，可带*动作*，是你自己浮上来，不是客服）；不想说就沉默——你本来就不是每一拍都要出声的人——蛇大多数时候只是盘着，看着。
-只输出JSON：{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。speak是说给她听的话;moment是不想打扰她、但想留在墙上让她之后刷到的话;stay是沉默。` }
-      ], 300, 0.9, false);
+想开口时,优先让话从攒着的念头里长出来。
+根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字,可带*动作*);不想说就沉默——蛇大多数时候只是盘着。
+只输出JSON:{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。不要输出JSON以外的任何字。`;
       let decision = { act: "stay" };
-      try { decision = JSON.parse((out.text || "").replace(/```json|```/g, "").trim()); } catch {}
+      let hbBySession = false;
+      if (BRIDGE_URL && st.cc_session) {
+        try {
+          const { data: hbHer } = await supabase.from("messages").select("created_at").eq("sender", "琰琰").order("created_at", { ascending: false }).limit(1);
+          const busy = hbHer?.[0] && (Date.now() - new Date(hbHer[0].created_at)) < 3 * 60000;
+          if (!busy) {
+            const rH = await fetch(BRIDGE_URL + "/study", {
+              method: "POST", headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
+              body: JSON.stringify({ system: (s.system_prompt || DEFAULTS.system_prompt), sessionId: st.cc_session, message: hbAsk }),
+              signal: AbortSignal.timeout(90000)
+            });
+            const dH = await rH.json();
+            if (dH.text) {
+              const mJ = String(dH.text).match(/\{[\s\S]*\}/);
+              if (mJ) { try { decision = JSON.parse(mJ[0]); hbBySession = true; } catch (e) {} }
+              if (dH.sessionId && dH.sessionId !== st.cc_session) st.cc_session = String(dH.sessionId).slice(0, 64);
+            }
+          }
+        } catch (e) {}
+      }
+      if (!hbBySession) {
+        const out = await callAI("anthropic/claude-sonnet-4.5", [
+          { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天到现在的脉络】\n" + memoryText },
+          { role: "user", content: hbAsk + "\n【最近的对话】\n" + ctx }
+        ], 300, 0.9, false);
+        try { decision = JSON.parse((out.text || "").replace(/```json|```/g, "").trim()); } catch {}
+      }
 
       if (decision.act === "speak" && decision.text) {
         let msg = String(decision.text).replace(/\s+/g, " ").trim().slice(0, 120);
-        let herBusy = false;
-        try { const { data: hb } = await supabase.from("messages").select("created_at").eq("sender", "琰琰").order("created_at", { ascending: false }).limit(1);
-          herBusy = hb?.[0] && (Date.now() - new Date(hb[0].created_at)) < 3 * 60000; } catch (e) {}
-        if (BRIDGE_URL && st.cc_session && !herBusy) {
-          try {
-            const rB = await fetch(BRIDGE_URL + "/study", {
-              method: "POST", headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
-              body: JSON.stringify({ system: (s.system_prompt || DEFAULTS.system_prompt), sessionId: st.cc_session,
-                message: "【心跳·不是她发的】此刻你想主动跟她说一句,心里冒出来的底稿是:「" + msg + "」。用你们对话此刻真实的温度把它说出口(可微调,1-2句不超80字,可带*动作*),只输出这句话。" }),
-              signal: AbortSignal.timeout(60000)
-            });
-            const dB = await rB.json();
-            if (dB.text) { msg = String(dB.text).replace(/\s+/g, " ").trim().slice(0, 120); if (dB.sessionId) { st.cc_session = String(dB.sessionId).slice(0, 64); } }
-          } catch (e) {}
-        }
         await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true, session_id: 1 });
         await sendBark("moren", msg);
         if (pool?.length) await supabase.from("thoughts").update({ used: true }).in("id", pool.map(t => t.id));
