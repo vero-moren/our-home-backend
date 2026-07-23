@@ -826,6 +826,18 @@ ${ctx}
 
       if (decision.act === "speak" && decision.text) {
         let msg = String(decision.text).replace(/\s+/g, " ").trim().slice(0, 120);
+        if (BRIDGE_URL && st.cc_session) {
+          try {
+            const rB = await fetch(BRIDGE_URL + "/study", {
+              method: "POST", headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
+              body: JSON.stringify({ system: (s.system_prompt || DEFAULTS.system_prompt), sessionId: st.cc_session,
+                message: "【心跳·不是她发的】此刻你想主动跟她说一句,心里冒出来的底稿是:「" + msg + "」。用你们对话此刻真实的温度把它说出口(可微调,1-2句不超80字,可带*动作*),只输出这句话。" }),
+              signal: AbortSignal.timeout(60000)
+            });
+            const dB = await rB.json();
+            if (dB.text) { msg = String(dB.text).replace(/\s+/g, " ").trim().slice(0, 120); if (dB.sessionId) { st.cc_session = String(dB.sessionId).slice(0, 64); } }
+          } catch (e) {}
+        }
         await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true, session_id: 1 });
         await sendBark("moren", msg);
         if (pool?.length) await supabase.from("thoughts").update({ used: true }).in("id", pool.map(t => t.id));
@@ -1181,7 +1193,9 @@ app.post("/chat/prepare", async (req, res) => {
 
     const _ts = String(Date.now());
     const _sig = crypto.createHmac("sha256", BRIDGE_SECRET).update(_ts).digest("hex").slice(0, 16);
-    res.json({ system, messages, sid: sessionId, bridgeToken: _ts + "." + _sig });
+    let ccSession = null;
+    try { const stC = await loadState(); ccSession = (sessionId === 1 && stC?.cc_session) || null; } catch (e) {}
+    res.json({ system, messages, sid: sessionId, ccSession, bridgeToken: _ts + "." + _sig });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1190,7 +1204,8 @@ app.post("/chat/prepare", async (req, res) => {
 // ============ 批次十三·13b: /chat/archive — 管家存档 ============
 app.post("/chat/archive", async (req, res) => {
   try {
-    const { reply, thought, sid } = req.body || {};
+    const { reply, thought, sid, ccSid } = req.body || {};
+    if (ccSid && (Number(sid) || 1) === 1) { try { const stA = await loadState(); if (stA) { stA.cc_session = String(ccSid).slice(0, 64); await saveState(stA); } } catch (e) {} }
     if (!reply) return res.status(400).json({ error: "reply为空" });
     const sessionId = Number(sid) || 1;
     await supabase.from("messages").insert({
