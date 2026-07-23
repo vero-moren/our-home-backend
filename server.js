@@ -826,7 +826,10 @@ ${ctx}
 
       if (decision.act === "speak" && decision.text) {
         let msg = String(decision.text).replace(/\s+/g, " ").trim().slice(0, 120);
-        if (BRIDGE_URL && st.cc_session) {
+        let herBusy = false;
+        try { const { data: hb } = await supabase.from("messages").select("created_at").eq("sender", "琰琰").order("created_at", { ascending: false }).limit(1);
+          herBusy = hb?.[0] && (Date.now() - new Date(hb[0].created_at)) < 3 * 60000; } catch (e) {}
+        if (BRIDGE_URL && st.cc_session && !herBusy) {
           try {
             const rB = await fetch(BRIDGE_URL + "/study", {
               method: "POST", headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
@@ -1205,7 +1208,12 @@ app.post("/chat/prepare", async (req, res) => {
 app.post("/chat/archive", async (req, res) => {
   try {
     const { reply, thought, sid, ccSid } = req.body || {};
-    if (ccSid && (Number(sid) || 1) === 1) { try { const stA = await loadState(); if (stA) { stA.cc_session = String(ccSid).slice(0, 64); await saveState(stA); } } catch (e) {} }
+    if (ccSid && (Number(sid) || 1) === 1) { try { const stA = await loadState(); if (stA) {
+      if (stA.cc_session === String(ccSid).slice(0, 64)) stA.cc_rounds = (stA.cc_rounds || 0) + 1;
+      else stA.cc_rounds = 1;
+      if (stA.cc_rounds >= 60) { stA.cc_session = null; stA.cc_rounds = 0; console.log("[换卡] 60轮到点,撕卡回魂"); }
+      else stA.cc_session = String(ccSid).slice(0, 64);
+      await saveState(stA); } } catch (e) {} }
     if (!reply) return res.status(400).json({ error: "reply为空" });
     const sessionId = Number(sid) || 1;
     await supabase.from("messages").insert({
