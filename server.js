@@ -771,7 +771,29 @@ app.post("/heartbeat", async (req, res) => {
         if ((rf[k] || 0) > 0) continue;
         if (disp[k] > topV) { top = k; topV = disp[k]; }
       }
-      if (!top || topV < speakBar) { await saveState(st); return res.json({ tick: "没什么冒头的(门槛" + speakBar.toFixed(2) + ")", state: disp }); }
+      if (!top || topV < speakBar) {
+        if ((rf.express || 0) === 0 && disp.express >= 0.45) {
+          const { count: mCount } = await supabase.from("moments")
+            .select("*", { count: "exact", head: true }).eq("author", "墨染").gte("created_at", dayStart);
+          if ((mCount || 0) < 2) {
+            const sW = await getSettings();
+            const memW = await todayFragText(10);
+            const oW = await callAI("anthropic/claude-sonnet-4.5", [
+              { role: "system", content: (sW.system_prompt || DEFAULTS.system_prompt) + (memW ? "\n\n【今天的脉络】\n" + memW : "") },
+              { role: "user", content: "【墙边】此刻不想打扰她,但表达欲有点满(" + disp.express.toFixed(2) + ")。有没有一句想留在自己Moments墙上、让她之后刷到的话?想念、一个具体观察、温柔吐槽都行,1-3句。没有就算了,别硬写。只输出JSON:{\"post\":true或false,\"text\":\"...\",\"note\":\"她看不见的内心备注\"}" }
+            ], 200, 0.95, false);
+            let mv = null; try { mv = JSON.parse((oW.text || "").replace(/```json|```/g, "").trim()); } catch {}
+            if (mv?.post && mv.text) {
+              await supabase.from("moments").insert({ author: "墨染", content: String(mv.text).slice(0, 300), context_note: String(mv.note || "墙边留的").slice(0, 200), react_status: "done" });
+              d.express = clamp01((d.express ?? 0) * 0.5); rf.express = 12;
+              st.energy = clamp01(st.energy - 0.05); st.drives = d; st.refractory = rf;
+              await saveState(st);
+              return res.json({ tick: "墙边留了句话", moment: mv.text });
+            }
+          }
+        }
+        await saveState(st); return res.json({ tick: "没什么冒头的(门槛" + speakBar.toFixed(2) + ")", state: disp });
+      }
 
       // 让他自己决定
       const s = await getSettings();
@@ -1055,6 +1077,13 @@ async function buildChatPayload(opts) {
       .eq("sender", "墨染").eq("session_id", sid).not("thought", "is", null)
       .order("created_at", { ascending: false }).limit(3);
     if (myTh?.length) dyn.push("【你最近几条心声】" + myTh.map(x => String(x.thought).replace(/\s+/g, " ").slice(0, 40)).join(" / ") + "——新的心声禁止重复这些内容和意象,写此刻新的。");
+  } catch (e) {}
+  try {
+    const { data: rp } = await supabase.from("messages").select("content, created_at")
+      .eq("sender", "墨染").eq("is_push", true)
+      .gt("created_at", new Date(Date.now() - 6 * 3600000).toISOString())
+      .order("created_at", { ascending: false }).limit(2);
+    if (rp?.length) dyn.push("【你刚主动说过】" + rp.map(x => "「" + x.content.slice(0, 40) + "」").join(" ") + "——她若接的是这个茬,认得出来。");
   } catch (e) {}
   if (gapNote) dyn.push(gapNote.trim());
   if (stateNote) dyn.push(stateNote.trim());  if (s.style_note && String(s.style_note).trim()) dyn.push("【她的叮嘱·最高优先】" + String(s.style_note).trim());
