@@ -370,7 +370,7 @@ async function executeTool(name, args) {
     if (name === "browse_moments") {
       const { data } = await supabase.from("moments").select("content, created_at")
         .order("created_at", { ascending: false }).limit(Math.min(Number(args.limit) || 5, 10));
-      return JSON.stringify((data || []).map(m => ({ 时间: m.created_at, 内容: m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 200) })));
+      return JSON.stringify((data || []).map(m => ({ 时间: m.created_at, 内容: m.content.replace(/\[img\](https?:[\s\S]*?)\[\/img\]/g, "〔照片URL: $1 〕").replace(/\[img\][\s\S]*?\[\/img\]/g, "[旧照片,看不到了]").slice(0, 400) })));
     }
     if (name === "carve_memory") {
       if (!args.content) return "失败:内容为空";
@@ -893,6 +893,27 @@ app.post("/sense/report", async (req, res) => {
 
 // ============ 批次十三·13c:MCP端点——把家里的手递给CC,Render退管家 ============
 const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock", "carve_memory", "recall_memory", "revise_memory", "forget_memory"];
+app.post("/moment/post", async (req, res) => {
+  try {
+    const t = String(req.body.text || "").trim();
+    const inImgs = Array.isArray(req.body.images) ? req.body.images : [];
+    if (!t && !inImgs.length) return res.status(400).json({ error: "空的" });
+    const urls = [];
+    for (const u of inImgs) {
+      try {
+        const m64 = String(u).match(/^data:(image\/\w+);base64,(.+)$/);
+        if (!m64) { urls.push(u); continue; }
+        const ext = m64[1].split("/")[1].replace("jpeg", "jpg");
+        const fn = "moments/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + ext;
+        const { error: e2 } = await supabase.storage.from("chat-media").upload(fn, Buffer.from(m64[2], "base64"), { contentType: m64[1] });
+        if (e2) { urls.push(u); continue; }
+        urls.push(supabase.storage.from("chat-media").getPublicUrl(fn).data.publicUrl);
+      } catch (e) { urls.push(u); }
+    }
+    await supabase.from("moments").insert({ content: urls.map(u => "[img]" + u + "[/img]").join("") + t, author: "琰琰", react_status: "pending" });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.post("/mcp", async (req, res) => {
   const m = req.body || {};
   const okDoor = (req.headers["x-bridge-secret"] || "") === BRIDGE_SECRET || String(req.query.key || "") === BRIDGE_SECRET;
