@@ -398,6 +398,9 @@ async function executeTool(name, args) {
     if (name === "recall_memory") {
       if (!args.query) return "失败:要有关键词";
       try {
+          const r = await obTool("breath_search", { query: String(args.query).slice(0, 80), max_results: 3 });
+          if (r && r !== "(空)") return r;
+        } catch (e) {}
         const hits = (await obSearch(String(args.query).slice(0, 80))).slice(0, 3);
         if (!hits.length) return "脑子里没翻到相关的";
         return hits.map(m => "【" + (m.name || "记忆") + " · ID:" + m.id + "】" + (m.content || m.preview).slice(0, 500)).join("\n---\n");
