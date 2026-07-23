@@ -398,14 +398,16 @@ async function executeTool(name, args) {
     if (name === "recall_memory") {
       if (!args.query) return "失败:要有关键词";
       try {
-          const r = await obTool("breath_search", { query: String(args.query).slice(0, 80), max_results: 3 });
-          if (r && r !== "(空)") return r;
-        } catch (e) {}
+        const r = await obTool("breath_search", { query: String(args.query).slice(0, 80), max_results: 3 });
+        if (r && r !== "(空)") return r;
+      } catch (e) {}
+      try {
         const hits = (await obSearch(String(args.query).slice(0, 80))).slice(0, 3);
         if (!hits.length) return "脑子里没翻到相关的";
         return hits.map(m => "【" + (m.name || "记忆") + " · ID:" + m.id + "】" + (m.content || m.preview).slice(0, 500)).join("\n---\n");
       } catch (e) { return "回想失败:" + e.message; }
     }
+
     if (name === "revise_memory") {
       if (!args.bucket_id || !args.content) return "失败:需要bucket_id和content";
       try { return await obTool("trace", { bucket_id: String(args.bucket_id).trim(), content: String(args.content).slice(0, 1000) }); }
