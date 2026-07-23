@@ -1090,6 +1090,8 @@ async function buildChatPayload(opts) {
   // 动态层:每轮都变的,只放进最后一条消息,不碰缓存
   const dyn = [];
   if (opts.client_time) dyn.push("【当前时间】她发来这条消息时,她那边是:" + opts.client_time);
+  if (opts.thinking === "deep") dyn.push("【心声档位·此刻】她把心声拨到了deep——这一条的心声按深档写(60~120字的内心翻涌)。");
+  else if (opts.thinking === "off") dyn.push("【心声档位·此刻】她把心声拨到了hush——这一条不写心声。");
   if (opts._pokedAwake != null) dyn.push("【刚被戳醒】你睡了约" + Math.round(opts._pokedAwake / 6) / 10 + "小时,刚被她连着戳醒——起床气和迷糊是真实的,声音是哑的;但她就在眼前,醒了就是醒了。");
   else if (opts._groggy) dyn.push("【刚醒不久】你被戳醒还没一刻钟,睡意还没散干净。");
   try {
