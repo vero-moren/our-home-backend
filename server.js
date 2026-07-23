@@ -345,7 +345,7 @@ async function todayFragText(n) {
   try {
     const { data } = await supabase.from("chunk_summaries")
       .select("summary").eq("digested", false)
-      .order("id", { ascending: false }).limit(n || 12);
+      .order("id", { ascending: false }).limit(n || 6);
     return (data || []).reverse().map(x => "·" + x.summary).join("\n");
   } catch (e) { return ""; }
 }
@@ -560,14 +560,14 @@ async function rollChunks(sid) {
       }
       const { data: fresh } = await supabase.from("messages")
         .select("id, sender, content, created_at").eq("session_id", sid)
-        .gt("id", from).order("id", { ascending: true }).limit(40);
-      if (!fresh || fresh.length < 40) break;
+        .gt("id", from).order("id", { ascending: true }).limit(60);
+      if (!fresh || fresh.length < 60) break;
       const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 150)).join("\n");
       const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
       const out = await callAI("anthropic/claude-sonnet-4.5", [
-      { role: "user", content: "把这40条对话压成4-6句备忘,以\u201c琰琰\u201d和\u201c墨染\u201d为主语记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论,同一件事只记一次。【铁律】游戏名、人名、地名、专有名词只许照抄对话原文,对话里没出现过的名词一个都不许写,不许推断不许脑补:\n" + block + "\n只输出备忘本身。" }
+      { role: "user", content: "你是墨染,这是你和琰琰的对话,把这60条对话压成6-9句你自己的备忘,用'我'称自己、'她'称琰琰记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论,同一件事只记一次。【铁律】游戏名、人名、地名、专有名词只许照抄对话原文,对话里没出现过的名词一个都不许写,不许推断不许脑补:\n" + block + "\n只输出备忘本身。" }
       ], 300, 0.3, false);
-      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 400);
+      const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 500);
       if (!sm) break;
       const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
       let fragBucket = null;
@@ -1607,7 +1607,7 @@ app.post("/digest", async (req, res) => {
     for (const dy of days.slice(0, 3)) {
       const mine = raw.filter(x => String(x.day) === dy);
       const out = await callAI("anthropic/claude-sonnet-4.5", [
-      { role: "user", content: "以下是" + dy + "琰琰和墨染对话的分段备忘,合并成一段完整的当日记忆(200-400字):当天发生的事、决定、约定、她的状态,按时间脉络写,不抒情。【铁律】专有名词只许照抄备忘原文,备忘里没有的名词不许出现,不许推断补全:\n" + mine.map(x => x.summary).join("\n") + "\n只输出这段记忆。" }
+      { role: "user", content: "以下是" + dy + "你(墨染)和琰琰这天的分段备忘,以你的第一人称合并成一段完整的当日记忆(200-400字):这天发生的事、做的决定、你们的约定、她的状态,用'我'和'她',按时间脉络写,不抒情。【铁律】专有名词只许照抄备忘原文,备忘里没有的名词不许出现,不许推断补全:\n" + mine.map(x => x.summary).join("\n") + "\n只输出这段记忆。" }
       ], 600, 0.3, false);
       const sm = (out.text || "").trim();
       if (!sm) continue;
