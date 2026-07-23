@@ -1473,6 +1473,7 @@ app.post("/edit", async (req, res) => {
     if (!lastUser?.[0]) return res.status(404).json({ error: "没有可编辑的消息" });
     await supabase.from("messages").update({ content }).eq("id", lastUser[0].id);
     await supabase.from("messages").delete().gt("created_at", lastUser[0].created_at).eq("session_id", sid);
+    if (sid === 1) { try { const stE = await loadState(); if (stE) { stE.cc_session = null; stE.cc_rounds = 0; await saveState(stE); console.log("[换卡] 编辑触发撕卡"); } } catch (e) {} }
     res.json(await generateReply(req.body));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1486,6 +1487,7 @@ app.post("/regenerate", async (req, res) => {
       .order("created_at", { ascending: false }).limit(1);
     if (last?.[0]?.sender === "墨染")
       await supabase.from("messages").delete().eq("id", last[0].id);
+    if (sid === 1) { try { const stR = await loadState(); if (stR) { stR.cc_session = null; stR.cc_rounds = 0; await saveState(stR); console.log("[换卡] 重答触发撕卡"); } } catch (e) {} }
     res.json(await generateReply(req.body));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
