@@ -1141,9 +1141,22 @@ app.post("/chat/prepare", async (req, res) => {
     const inImgs = Array.isArray(req.body.images) ? req.body.images : (req.body.image ? [req.body.image] : []);
     if (!userMessage && !inImgs.length) return res.status(400).json({ error: "消息不能为空" });
 
+    const imgUrls = [];
+    for (const u of inImgs) {
+      try {
+        const m64 = String(u).match(/^data:(image\/\w+);base64,(.+)$/);
+        if (!m64) { imgUrls.push(u); continue; }
+        const ext = m64[1].split("/")[1].replace("jpeg", "jpg");
+        const fn = "chat/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + ext;
+        const { error: upErr } = await supabase.storage.from("chat-media").upload(fn, Buffer.from(m64[2], "base64"), { contentType: m64[1] });
+        if (upErr) { imgUrls.push(u); continue; }
+        imgUrls.push(supabase.storage.from("chat-media").getPublicUrl(fn).data.publicUrl);
+      } catch (e) { imgUrls.push(u); }
+    }
+    req.body.images = imgUrls;
     await supabase.from("messages").insert({
       sender: "琰琰",
-      content: inImgs.map(u => "[img]" + u + "[/img]").join("") + userMessage,
+      content: imgUrls.map(u => "[img]" + u + "[/img]").join("") + userMessage,
       session_id: sid
     });
     pulseHerTouch().catch(() => {});
@@ -1177,7 +1190,7 @@ app.post("/chat/prepare", async (req, res) => {
     const messages = ctx.map(m => {
       if (typeof m.content === "string") return m;
       if (Array.isArray(m.content)) {
-        return { role: m.role, content: m.content.map(p => p.type === "text" ? (p.text || "") : "[一张照片]").join("\n") };
+        return { role: m.role, content: m.content.map(p => p.type === "text" ? (p.text || "") : (p.image_url?.url && /^https?:/.test(p.image_url.url) ? "〔她发来一张照片,URL: " + p.image_url.url + " 〕" : "[一张照片]")).join("\n") };
       }
       return m;
     });
