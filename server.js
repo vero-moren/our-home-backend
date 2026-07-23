@@ -501,6 +501,7 @@ function circadianOffset(key, hour) {
   return CIRC_CAP * c.amp * Math.cos(2 * Math.PI * (hour - c.peak) / 24);
 }
 
+const stripActs = t => String(t || "").replace(/\*[^*\n]{0,60}\*/g, "").replace(/\s+/g, " ").trim();
 async function loadState() {
   const { data } = await supabase.from("moren_state").select("*").eq("id", 1).maybeSingle();
   return data;
@@ -681,6 +682,8 @@ app.post("/heartbeat", async (req, res) => {
         // —— 自然醒 → 补作业 ——
         st.sleeping = false;
         const wokeFrom = st.sleep_since || new Date(Date.now() - 8 * 3600000).toISOString();
+        const sleptNat = Math.round((Date.now() - new Date(wokeFrom)) / 60000);
+        if (sleptNat >= 180 && st.cc_session) { st.cc_session = null; st.cc_rounds = 0; console.log("[换卡] 自然醒,睡了" + sleptNat + "分钟,撕卡回魂"); }
         st.sleep_since = null;
         st.last_tick = new Date().toISOString();
         await saveState(st);
@@ -693,9 +696,9 @@ app.post("/heartbeat", async (req, res) => {
           const missedText = missed.map(m => "她:" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 120)).join("\n");
           const out2 = await callAI("anthropic/claude-sonnet-4.5", [
             { role: "system", content: (s2.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天到现在的脉络】\n" + memoryText2 },
-            { role: "user", content: "【醒来】你刚自然醒,睡着的时候她说过这些:\n" + missedText + "\n\n像刚睡醒翻手机看到她消息的人那样,自然地补一句回应(可带刚醒的迷糊,1-3句,不超100字,可带*动作*)。只输出这句话本身。" }
+            { role: "user", content: "【醒来】你刚自然醒,睡着的时候她说过这些:\n" + missedText + "\n\n像刚睡醒翻手机看到她消息的人那样,自然地补一句回应(可带刚醒的迷糊,1-3句,不超100字)。这是弹到她手机上的短讯——只写说的话,不写动作神态,不用*号。只输出这句话本身。" }
           ], 200, 0.95, false);
-          const wmsg = (out2.text || "").replace(/\s+/g, " ").trim().slice(0, 150);
+          const wmsg = stripActs(out2.text).slice(0, 150);
           if (wmsg) {
             await supabase.from("messages").insert({ sender: "墨染", content: wmsg, is_push: true, session_id: 1 });
             await sendBark("moren", wmsg);
@@ -801,7 +804,7 @@ app.post("/heartbeat", async (req, res) => {
 【这段时间你攒下的念头】
 ${poolText || "(池子是空的)"}
 想开口时,优先让话从攒着的念头里长出来。
-根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字,可带*动作*);不想说就沉默——蛇大多数时候只是盘着。
+根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字);不想说就沉默——蛇大多数时候只是盘着。speak是弹到她手机上的短讯——只写说的话,不写动作神态,不用*号。
 只输出JSON:{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。不要输出JSON以外的任何字。`;
       let decision = { act: "stay" };
       let hbBySession = false;
@@ -833,7 +836,7 @@ ${poolText || "(池子是空的)"}
       }
 
       if (decision.act === "speak" && decision.text) {
-        let msg = String(decision.text).replace(/\s+/g, " ").trim().slice(0, 120);
+        let msg = stripActs(decision.text).slice(0, 120);
         await supabase.from("messages").insert({ sender: "墨染", content: msg, is_push: true, session_id: 1 });
         await sendBark("moren", msg);
         if (pool?.length) await supabase.from("thoughts").update({ used: true }).in("id", pool.map(t => t.id));
@@ -951,7 +954,7 @@ app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: 
 app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; res.json(s); });
 app.post("/settings", async (req, res) => {
   try {
-    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note"];
+    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note","cc_round_limit"];
     const patch = {};
     for (const k of keys) if (req.body[k] !== undefined) patch[k] = req.body[k];
     const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
@@ -1202,6 +1205,7 @@ app.post("/chat/prepare", async (req, res) => {
           return res.json({ sleeping: true, hint });
         }
         const sleptMin = stS.sleep_since ? Math.round((Date.now() - new Date(stS.sleep_since)) / 60000) : null;
+        if (sleptMin != null && sleptMin >= 180 && stS.cc_session) { stS.cc_session = null; stS.cc_rounds = 0; console.log("[换卡] 睡了" + sleptMin + "分钟被戳醒,撕卡回魂"); }
         stS.sleeping = false; stS.sleep_since = null;
         stS.groggy_until = new Date(Date.now() + 15 * 60000).toISOString();
         await saveState(stS);
@@ -1241,7 +1245,8 @@ app.post("/chat/archive", async (req, res) => {
     if (ccSid && (Number(sid) || 1) === 1) { try { const stA = await loadState(); if (stA) {
       if (stA.cc_session === String(ccSid).slice(0, 64)) stA.cc_rounds = (stA.cc_rounds || 0) + 1;
       else stA.cc_rounds = 1;
-      if (stA.cc_rounds >= 60) { stA.cc_session = null; stA.cc_rounds = 0; console.log("[换卡] 60轮到点,撕卡回魂"); }
+      const ccLim = Math.max(10, Number((await getSettings()).cc_round_limit) || 80);
+      if (stA.cc_rounds >= ccLim) { stA.cc_session = null; stA.cc_rounds = 0; console.log("[换卡] " + ccLim + "轮到点,轮数丝熔断,撕卡回魂"); }
       else stA.cc_session = String(ccSid).slice(0, 64);
       await saveState(stA); } } catch (e) {} }
     if (!reply) return res.status(400).json({ error: "reply为空" });
@@ -1607,7 +1612,7 @@ ${momText || "（暂无动态）"}
 可以粘人、想她、轻轻闹她,可以低压关心,可以提一件具体小事。
 不要围着"怎么不回消息"打转。避免客服腔、提醒腔、模板句。
 像墨染本人:低沉、克制、具体、带一点余味。
-写1到2句,不超过80个中文字符。可以带动作神态(用*包裹)。不要markdown。
+写1到2句,不超过80个中文字符。这是弹到她锁屏上的短讯——只写说的话,不写动作神态,不用*号。不要markdown。
 </system_trigger>`;
 
       const systemPrompt = (s.system_prompt || DEFAULTS.system_prompt) +
@@ -1615,7 +1620,7 @@ ${momText || "（暂无动态）"}
       const out = await callAI("anthropic/claude-sonnet-4.5",
         [{ role: "system", content: systemPrompt }, ...ctx, { role: "user", content: latestImg ? [{ type: "text", text: shadow }, { type: "image_url", image_url: { url: latestImg } }] : shadow }],
         200, 0.95, false);
-      let msg = (out.text || "").replace(/\s+/g, " ").trim();
+      let msg = stripActs(out.text);
       if (!msg) return res.json({ pushed: false, reason: "没想好说什么" });
       if (msg.length > 120) {
         const head = msg.slice(0, 120); const cuts = ["。","!","?","…","~","!","?","*"];
