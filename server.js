@@ -1001,7 +1001,7 @@ app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: 
 app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; delete s.door_pass; res.json(s); });
 app.post("/settings", async (req, res) => {
   try {
-    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note","cc_round_limit","cc_model","cc_effort","compress_every","or_models","top_p","presence_penalty","frequency_penalty","repetition_penalty","theme"];
+    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note","cc_round_limit","cc_model","cc_effort","compress_every","or_models","top_p","presence_penalty","frequency_penalty","repetition_penalty","theme","cc_max_tokens"];
     const patch = {};
     for (const k of keys) if (req.body[k] !== undefined) patch[k] = req.body[k];
     const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
