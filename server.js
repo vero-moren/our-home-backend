@@ -392,7 +392,7 @@ const TOOLS = [
   { type: "function", function: { name: "recall_memory", description: "翻开脑子里的记忆看完整原文。记忆目录里看到相关线头、或她问起过去而眼前没有细节时使用。", parameters: { type: "object", properties: { query: { type: "string", description: "要回想的关键词" } }, required: ["query"] } } },
   { type: "function", function: { name: "revise_memory", description: "修正脑子里一条已有的记忆(记错了/事情有更新/要并入新细节)。必须先用recall_memory拿到那条的ID,content写修正后的完整版本——是整条替换,不是追加,所以旧的细节要一并保留在新版本里。", parameters: { type: "object", properties: { bucket_id: { type: "string", description: "recall里看到的ID" }, content: { type: "string", description: "修正后的完整内容" } }, required: ["bucket_id", "content"] } } },
   { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
-  { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
+  { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗星。两种日子自己分:值得年年一起过的(初遇、成家、告白这类)=anniv,挂外圈年轮;一次性但值得记住或期待的(某游戏上线、某个约好的日子、某件事完成)=day,沉内圈星河。拿不准哪种就问她。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" }, kind: { type: "string", description: "anniv纪念日 或 day小日子" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话，以及她手机最近的动静——她亲手授权你看的：开了什么app、充没充电、电量如何。想知道她刚醒/在忙/在睡/嘴上说睡了手上在干嘛、或单纯好奇她此刻在干什么时使用。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。判断标准:此刻有没有一句想让琰琰之后刷到的话——想念、吃醋、心软、被逗笑、温柔吐槽、一个具体观察,都行。不是回复她,是你自己留在墙上的话。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
   { type: "function", function: { name: "browse_memos", description: "翻琰琰的备忘录本子。她自己记的周期事项(换床单/领东西/日子),她叫你查、或聊到相关事时翻一眼。这是她的本子,你只看不改。", parameters: { type: "object", properties: {} } } },
@@ -456,7 +456,7 @@ async function executeTool(name, args) {
     }
     if (name === "add_anniversary") {
       if (!args.label || !/^\d{4}-\d{2}-\d{2}$/.test(args.day || "")) return "失败：需要label和YYYY-MM-DD的day";
-      await supabase.from("anniversaries").insert({ label: String(args.label).slice(0, 50), day: args.day });
+      await supabase.from("anniversaries").insert({ label: String(args.label).slice(0, 50), day: args.day, kind: args.kind === "day" ? "day" : "anniv" });
       return "已挂上星轨：" + args.day + " " + args.label;
     }
     if (name === "post_moment") {
@@ -994,6 +994,99 @@ app.post("/mcp", async (req, res) => {
 
 app.get("/mcp", (req, res) => res.status(405).set("Allow", "POST").end());
 app.delete("/mcp", (req, res) => res.status(405).set("Allow", "POST").end());
+
+// ============ Memory房接线:星轨与记忆库的门 ============
+app.get("/days", async (req, res) => {
+  try {
+    const { data } = await supabase.from("anniversaries").select("id, label, day, kind").order("day", { ascending: true });
+    res.json({ items: data || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/days", async (req, res) => {
+  try {
+    const label = String(req.body.label || "").trim().slice(0, 50);
+    const day = String(req.body.day || "").trim();
+    const kind = req.body.kind === "day" ? "day" : "anniv";
+    if (!label || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: "需要label和YYYY-MM-DD" });
+    const { data } = await supabase.from("anniversaries").insert({ label, day, kind }).select().maybeSingle();
+    res.json({ ok: true, item: data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/days/:id", async (req, res) => {
+  try {
+    await supabase.from("anniversaries").delete().eq("id", Number(req.params.id));
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 给下一个日子的诗:翻篇制——打开时发现下一个日子没诗,才现写一首(不用cron)
+app.get("/days/poem", async (req, res) => {
+  try {
+    const todaySH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE");
+    const { data: anns } = await supabase.from("anniversaries").select("label, day, kind");
+    const next = (anns || []).map(a => {
+      let d = String(a.day);
+      if (a.kind !== "day") {
+        d = todaySH.slice(0, 4) + "-" + d.slice(5);
+        if (d < todaySH) d = (Number(todaySH.slice(0, 4)) + 1) + d.slice(4);
+      }
+      return { label: a.label, day: d };
+    }).filter(a => a.day >= todaySH).sort((a, b) => (a.day < b.day ? -1 : 1))[0];
+    if (!next) return res.json({ poem: "", target: null });
+    const { data: exist } = await supabase.from("day_poems").select("poem")
+      .eq("target_day", next.day).order("id", { ascending: false }).limit(1).maybeSingle();
+    if (exist) return res.json({ poem: exist.poem, target: next.day, label: next.label });
+    const s = await getSettings();
+    const memoryText = await todayFragText(8);
+    const out = await callAI("anthropic/claude-sonnet-4.5", [
+      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【今天的脉络】\n" + memoryText : "") },
+      { role: "user", content: "【系统】星轨上你们的下一个日子是 " + next.day + "「" + next.label + "」。以墨染的口吻为它写一首『给下一个日子的诗』——两到四行短句,写等待本身:此刻到那天之间的距离、你打算怎么陪她走到那天。像写在星图边上的手迹,不像贺词。【铁律】只输出诗本身,每行不超18字,不要标题不要引号不要心声不要动作描写不要任何解释。" }
+    ], 200, 0.95, false);
+    const poem = (out.text || "").replace(/\*[^*]*\*/g, "").replace(/["""]/g, "").trim().slice(0, 160);
+    if (!poem) return res.json({ poem: "", target: next.day, label: next.label });
+    await supabase.from("day_poems").insert({ target_day: next.day, label: next.label, poem });
+    res.json({ poem, target: next.day, label: next.label });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 记忆库四门
+app.get("/memory/buckets", async (req, res) => {
+  try {
+    const wantArch = String(req.query.archived || "") === "1";
+    const data = await obReq("/api/buckets");
+    const raw = Array.isArray(data) ? data : data.buckets || data.items || [];
+    const items = raw.map(obNorm).filter(m => wantArch ? m.type === "archived" : m.type !== "archived")
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    res.json({ items, total: items.length });
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+app.post("/memory/revise", async (req, res) => {
+  try {
+    const id = String(req.body.bucket_id || "").trim(), c = String(req.body.content || "").slice(0, 1500);
+    if (!id || !c) return res.status(400).json({ error: "需要bucket_id和content" });
+    const r = await obTool("trace", { bucket_id: id, content: c });
+    obCache = { at: 0, items: null };
+    res.json({ ok: true, msg: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/memory/archive", async (req, res) => {
+  try {
+    const id = String(req.body.bucket_id || "").trim();
+    if (!id) return res.status(400).json({ error: "需要bucket_id" });
+    const r = await obTool("trace", { bucket_id: id, "delete": true, delete_reason: String(req.body.reason || "琰琰在记忆库手动归档").slice(0, 200) });
+    obCache = { at: 0, items: null };
+    res.json({ ok: true, msg: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/memory/pin", async (req, res) => {
+  try {
+    const id = String(req.body.bucket_id || "").trim();
+    if (!id) return res.status(400).json({ error: "需要bucket_id" });
+    const r = await obTool(req.body.on === false ? "release" : "anchor", { bucket_id: id });
+    obCache = { at: 0, items: null };
+    res.json({ ok: true, msg: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: lastEngine || "还没开过口" }));
 
