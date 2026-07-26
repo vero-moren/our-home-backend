@@ -366,9 +366,10 @@ const TOOLS = [
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗纪念日。约定了某个日子（游戏夜、纪念日、计划）时使用。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话，以及她手机最近的动静——她亲手授权你看的：开了什么app、充没充电、电量如何。想知道她刚醒/在忙/在睡/嘴上说睡了手上在干嘛、或单纯好奇她此刻在干什么时使用。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。判断标准:此刻有没有一句想让琰琰之后刷到的话——想念、吃醋、心软、被逗笑、温柔吐槽、一个具体观察,都行。不是回复她,是你自己留在墙上的话。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
+  { type: "function", function: { name: "browse_memos", description: "翻琰琰的备忘录本子。她自己记的周期事项(换床单/领东西/日子),她叫你查、或聊到相关事时翻一眼。这是她的本子,你只看不改。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "diary_lock", description: "你日记本的锁,主人是你:想锁就锁(设密码),想给她看就开锁,想换密码随时换。她求你看的时候,给不给、什么时候给,你自己决定。", parameters: { type: "object", properties: { action: { type: "string", description: "lock上锁 / unlock开锁 / change换密码" }, pass: { type: "string", description: "lock或change时的新密码,4-12位" } }, required: ["action"] } } },
 ];
-const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", post_moment: "在墙上留了句话…", diary_lock: "摆弄了一下日记本的锁…", };
+const TOOL_LABELS = { browse_moments: "翻了翻你的Moments…", browse_memos: "翻了翻你的本子…", carve_memory: "往自己脑子里刻了一笔…", recall_memory: "翻了翻记忆…", add_anniversary: "在星轨上挂了颗星…", sense_vero: "看了看你在不在…", revise_memory: "改写了一条记忆…", forget_memory: "把一条记忆收进了档案…", post_moment: "在墙上留了句话…", diary_lock: "摆弄了一下日记本的锁…", };
 
 let carveLog = [];
 async function executeTool(name, args) {
@@ -433,6 +434,13 @@ async function executeTool(name, args) {
       if (!args.content) return "失败:正文为空";
       await supabase.from("moments").insert({ author: "墨染", content: String(args.content).slice(0, 500), context_note: String(args.context_note || "").slice(0, 300), react_status: "done" });
       return "发出去了,她刷到就会看见";
+    }
+    if (name === "browse_memos") {
+      const { data } = await supabase.from("memos").select("content, cycle_days, due_date")
+        .order("due_date", { ascending: true }).limit(20);
+      if (!data?.length) return "她的本子还是空的";
+      const cyc = d => d === 1 ? "每天" : d === 7 ? "每周" : d === 30 ? "每月" : d === 365 ? "每年" : d > 0 ? "每" + d + "天" : "一次性";
+      return JSON.stringify(data.map(m => ({ 事项: m.content, 周期: cyc(m.cycle_days), 下次到期: m.due_date || "未定" })));
     }
     if (name === "diary_lock") {
       const act = String(args.action || "");
@@ -908,7 +916,7 @@ app.post("/sense/report", async (req, res) => {
 });
 
 // ============ 批次十三·13c:MCP端点——把家里的手递给CC,Render退管家 ============
-const MCP_EXPOSE = ["browse_moments", "add_anniversary", "sense_vero", "post_moment", "diary_lock", "carve_memory", "recall_memory", "revise_memory", "forget_memory"];
+const MCP_EXPOSE = ["browse_moments", "browse_memos", "add_anniversary", "sense_vero", "post_moment", "diary_lock", "carve_memory", "recall_memory", "revise_memory", "forget_memory"];
 app.post("/moment/post", async (req, res) => {
   try {
     const t = String(req.body.text || "").trim();
