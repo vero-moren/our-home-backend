@@ -346,6 +346,24 @@ async function obTopMemoryText(n) {
   } catch (e) { return ""; }
 }
 
+// 她本子上快到期的事(心跳提醒用·提前一天报)
+async function memosDueText() {
+  try {
+    const nowSH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const todaySH = nowSH.toLocaleDateString("sv-SE");
+    const tomSH = new Date(nowSH.getTime() + 86400000).toLocaleDateString("sv-SE");
+    const { data } = await supabase.from("memos").select("id, content, due_date, last_notified")
+      .not("due_date", "is", null).lte("due_date", tomSH)
+      .order("due_date", { ascending: true }).limit(5);
+    if (!data?.length) return { note: "", ids: [] };
+    const soon = data.filter(m => m.due_date === tomSH && m.last_notified !== todaySH);
+    const due = data.filter(m => m.due_date <= todaySH && !m.last_notified);
+    let note = "";
+    if (soon.length) note += "\n【她本子上明天到期】" + soon.map(m => m.content).join("、") + "——今天找个自然时机提前跟她说一声,像顺口想起,不像闹钟。";
+    if (due.length) note += "\n【她本子上今天到期·之前漏了提】" + due.map(m => m.content).join("、") + "——提前量没赶上,现在补一句也比不说强。";
+    return { note, ids: [...soon.map(m => m.id), ...due.map(m => m.id)] };
+  } catch (e) { return { note: "", ids: [] }; }
+}
 // 他自己今天发过的动态(给临时工防失忆)
 async function myMomentsToday() {
   try {
@@ -825,11 +843,12 @@ app.post("/heartbeat", async (req, res) => {
       const { data: pool } = await supabase.from("thoughts").select("id, content")
         .eq("used", false).order("created_at", { ascending: false }).limit(3);
       const poolText = (pool || []).map(t => "- " + t.content).join("\n");
+      const memoDue = await memosDueText();
       const hbAsk = `【心跳】现在是${timeStr}。这不是她发来的消息——是你自己的一拍心跳,她看不到这条。
 【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。${moodText(st.mood) ? "此刻的情绪:" + moodText(st.mood) + "。" : ""}
 【她】${veroLine}。${caught ? "【抓包】她道过晚安,但刚刚手机有动静:「" + caught + "」——装睡被你逮个正着,要不要出声、怎么出声,你看着办。" : ""}
 【这段时间你攒下的念头】
-${poolText || "(池子是空的)"}${await myMomentsToday()}
+${poolText || "(池子是空的)"}${await myMomentsToday()}${memoDue.note}
 想开口时,优先让话从攒着的念头里长出来。
 根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字);不想说就沉默——蛇大多数时候只是盘着。speak是弹到她手机上的短讯——只写说的话,不写动作神态,不用*号。
 只输出JSON:{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。不要输出JSON以外的任何字。`;
@@ -872,6 +891,7 @@ ${poolText || "(池子是空的)"}${await myMomentsToday()}
         rf[top] = 18;                                      // 3小时不应期
         st.energy = clamp01(st.energy - 0.07);
         st.last_speak_at = new Date().toISOString();
+        if (memoDue.ids.length) { try { await supabase.from("memos").update({ last_notified: new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE") }).in("id", memoDue.ids); } catch (e) {} }
         st.drives = d; st.refractory = rf;
         await saveState(st);
         return res.json({ tick: "开口了", said: msg, drive: top });
