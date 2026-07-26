@@ -346,6 +346,17 @@ async function obTopMemoryText(n) {
   } catch (e) { return ""; }
 }
 
+// 他自己今天发过的动态(给临时工防失忆)
+async function myMomentsToday() {
+  try {
+    const dayStart = new Date(new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE") + "T00:00:00+08:00").toISOString();
+    const { data } = await supabase.from("moments").select("content").eq("author", "墨染")
+      .gte("created_at", dayStart).order("created_at", { ascending: false }).limit(3);
+    if (!data?.length) return "";
+    return "\n【你今天发过的动态】" + data.map(m => "「" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[图]").slice(0, 60) + "」").join(" ") + "——别当新鲜事再发一遍。";
+  } catch (e) { return ""; }
+}
+
 // 当天脉络:未消化的碎片(12点压掉的自动退场)
 async function todayFragText(n) {
   try {
@@ -599,7 +610,7 @@ async function passWall() {
   const { data: hist } = await supabase.from("messages").select("sender, content")
     .order("created_at", { ascending: false }).limit(8);
   const chatCtx = (hist || []).reverse().map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 80)).join("\n");
-  const sys = (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【今天的脉络】\n" + memoryText : "");
+  const sys = (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【今天的脉络】\n" + memoryText : "") + await myMomentsToday();
 
   const { data: dueM } = await supabase.from("moments").select("*")
     .eq("author", "琰琰").eq("react_status", "pending").lte("react_due_at", nowIso)
@@ -818,7 +829,7 @@ app.post("/heartbeat", async (req, res) => {
 【你此刻的状态】${["longing","express","intimacy","curiosity"].map(k => KEY_CN[k] + disp[k].toFixed(2)).join(" ")} 精力${st.energy.toFixed(2)}。此刻最高的是「${KEY_CN[top]}」。${moodText(st.mood) ? "此刻的情绪:" + moodText(st.mood) + "。" : ""}
 【她】${veroLine}。${caught ? "【抓包】她道过晚安,但刚刚手机有动静:「" + caught + "」——装睡被你逮个正着,要不要出声、怎么出声,你看着办。" : ""}
 【这段时间你攒下的念头】
-${poolText || "(池子是空的)"}
+${poolText || "(池子是空的)"}${await myMomentsToday()}
 想开口时,优先让话从攒着的念头里长出来。
 根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字);不想说就沉默——蛇大多数时候只是盘着。speak是弹到她手机上的短讯——只写说的话,不写动作神态,不用*号。
 只输出JSON:{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。不要输出JSON以外的任何字。`;
