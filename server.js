@@ -530,6 +530,8 @@ let chunkLock = false;
 async function rollChunks(sid) {
   if (chunkLock) return; chunkLock = true;
   try {
+    const ce = Math.max(20, Number((await getSettings()).compress_every) || 40);
+    const need = ce + 20;
     for (let guard = 0; guard < 2; guard++) {
       const { data: lastCk } = await supabase.from("chunk_summaries")
         .select("upto_id").eq("session_id", sid)
@@ -548,8 +550,8 @@ async function rollChunks(sid) {
       }
       const { data: fresh } = await supabase.from("messages")
         .select("id, sender, content, created_at").eq("session_id", sid)
-        .gt("id", from).order("id", { ascending: true }).limit(60);
-      if (!fresh || fresh.length < 60) break;
+        .gt("id", from).order("id", { ascending: true }).limit(need);
+      if (!fresh || fresh.length < need) break;
       const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 150)).join("\n");
       const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
       const out = await callAI("anthropic/claude-sonnet-4.5", [
@@ -563,7 +565,7 @@ async function rollChunks(sid) {
         const held = String(await obTool("hold", { content: "【当日碎片 " + when + "】" + sm, tags: "当日碎片", importance: 7 }));
         fragBucket = (held.match(/bucket_id[:：]\s*([0-9a-f]{6,})/i) || held.match(/([0-9a-f]{12})/) || [])[1] || null;
       } catch (e) {}
-      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[39].id, day: daySH, summary: "[" + when + "] " + sm, ob_bucket: fragBucket });
+      await supabase.from("chunk_summaries").insert({ session_id: sid, upto_id: fresh[ce - 1].id, day: daySH, summary: "[" + when + "] " + sm, ob_bucket: fragBucket });
     }
   } catch (e) {} finally { chunkLock = false; }
 }
@@ -951,10 +953,10 @@ app.delete("/mcp", (req, res) => res.status(405).set("Allow", "POST").end());
 app.get("/health", (req, res) => res.json({ status: "墨染在家🖤", engine: lastEngine || "还没开过口" }));
 
 // 设置读写
-app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; res.json(s); });
+app.get("/settings", async (req, res) => { const s = await getSettings(); delete s.diary_pass; delete s.door_pass; res.json(s); });
 app.post("/settings", async (req, res) => {
   try {
-    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note","cc_round_limit"];
+    const keys = ["system_prompt","temperature","context_rounds","max_reply","style_note","cc_round_limit","cc_model","cc_effort","compress_every","or_models","top_p","presence_penalty","frequency_penalty","repetition_penalty","theme"];
     const patch = {};
     for (const k of keys) if (req.body[k] !== undefined) patch[k] = req.body[k];
     const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
@@ -1509,6 +1511,24 @@ app.post("/diary/unlock", async (req, res) => {
 
 // 查额度
 app.get("/credits", async (req, res) => {
+// 家门的锁:验号进门
+app.post("/door/unlock", async (req, res) => {
+  const s = await getSettings();
+  res.json({ ok: String(req.body.pass || "").trim() === String(s.door_pass || "1314").trim() });
+});
+// 家门换密码:旧号验对才许换
+app.post("/door/change", async (req, res) => {
+  try {
+    const s = await getSettings();
+    if (String(req.body.old_pass || "").trim() !== String(s.door_pass || "1314").trim())
+      return res.json({ ok: false, error: "wrong" });
+    const np = String(req.body.new_pass || "").trim();
+    if (np.length < 4 || np.length > 12) return res.json({ ok: false, error: "bad_length" });
+    const { data: row } = await supabase.from("settings").select("id").limit(1).maybeSingle();
+    if (row) await supabase.from("settings").update({ door_pass: np }).eq("id", row.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
   try {
     const r = await fetch("https://openrouter.ai/api/v1/credits", {
       headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }
