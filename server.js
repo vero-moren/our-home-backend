@@ -1053,9 +1053,18 @@ app.get("/days/poem", async (req, res) => {
 app.get("/memory/buckets", async (req, res) => {
   try {
     const wantArch = String(req.query.archived || "") === "1";
-    const data = await obReq("/api/buckets");
-    const raw = Array.isArray(data) ? data : data.buckets || data.items || [];
-    const items = raw.map(obNorm).filter(m => wantArch ? m.type === "archived" : m.type !== "archived")
+    let raw = [];
+    const paths = wantArch
+      ? ["/api/buckets?include_archived=1", "/api/buckets?archived=1", "/api/archive", "/api/buckets"]
+      : ["/api/buckets"];
+    for (const p of paths) {
+      try {
+        const data = await obReq(p);
+        const got = Array.isArray(data) ? data : data.buckets || data.items || data.archived || [];
+        if (got.length) { raw = got; if (!wantArch || got.map(obNorm).some(m => /arch/i.test(m.type))) break; }
+      } catch (e) {}
+    }
+    const items = raw.map(obNorm).filter(m => wantArch ? /arch/i.test(m.type) : !/arch/i.test(m.type))
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     res.json({ items, total: items.length });
   } catch (e) { res.status(503).json({ error: e.message }); }
