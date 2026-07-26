@@ -73,6 +73,12 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking, too
   lastEngine = "OR";
   const body = { model, max_tokens: maxTokens, messages };
   if (temperature != null) body.temperature = Number(temperature);
+  if (tools) { try { const sp = await getSettings();
+    if (sp.top_p != null) body.top_p = Number(sp.top_p);
+    if (sp.presence_penalty != null) body.presence_penalty = Number(sp.presence_penalty);
+    if (sp.frequency_penalty != null) body.frequency_penalty = Number(sp.frequency_penalty);
+    if (sp.repetition_penalty != null) body.repetition_penalty = Number(sp.repetition_penalty);
+  } catch (e) {} }
   if (wantThinking) body.reasoning = { effort: "low" };
   if (tools) body.tools = tools;
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -978,7 +984,7 @@ function thinkInstr(mode) {
 async function buildChatPayload(opts) {
   const sid = Number(opts.session_id) || 1;
   const s = await getSettings();
-  const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : "anthropic/claude-sonnet-4.5";
+  const model = ALLOWED_MODELS.includes(opts.model) ? opts.model : (ALLOWED_MODELS.includes(s.cc_model) ? s.cc_model : "anthropic/claude-sonnet-4.5");
 
  let memoryText = "";
   try { memoryText = await obMemoryText(opts.message); } catch (e) {}
@@ -1234,7 +1240,7 @@ app.post("/chat/prepare", async (req, res) => {
     const _sig = crypto.createHmac("sha256", BRIDGE_SECRET).update(_ts).digest("hex").slice(0, 16);
     let ccSession = null;
     try { const stC = await loadState(); ccSession = (sessionId === 1 && stC?.cc_session) || null; } catch (e) {}
-    res.json({ system, messages, sid: sessionId, ccSession, bridgeToken: _ts + "." + _sig });
+    res.json({ system, messages, sid: sessionId, ccSession, model, bridgeToken: _ts + "." + _sig });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1344,6 +1350,10 @@ app.post("/chat/stream", async (req, res) => {
         body: JSON.stringify({
           model, stream: true, max_tokens: s.max_reply || 1000,
           temperature: s.temperature ?? 0.9,
+          top_p: s.top_p != null ? Number(s.top_p) : undefined,
+          presence_penalty: s.presence_penalty != null ? Number(s.presence_penalty) : undefined,
+          frequency_penalty: s.frequency_penalty != null ? Number(s.frequency_penalty) : undefined,
+          repetition_penalty: s.repetition_penalty != null ? Number(s.repetition_penalty) : undefined,
           messages: msgs, tools: TOOLS
         }),
         signal: controller.signal
@@ -1511,6 +1521,14 @@ app.post("/diary/unlock", async (req, res) => {
 
 // 查额度
 app.get("/credits", async (req, res) => {
+// 撕卡门:Settings的RESET ROOM KEY
+app.post("/session/reset", async (req, res) => {
+  try {
+    const st = await loadState();
+    if (st) { st.cc_session = null; st.cc_rounds = 0; await saveState(st); }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 // 家门的锁:验号进门
 app.post("/door/unlock", async (req, res) => {
   const s = await getSettings();
