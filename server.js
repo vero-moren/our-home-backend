@@ -59,7 +59,7 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking, too
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Bridge-Secret": BRIDGE_SECRET },
         body: JSON.stringify({ system, messages: rest }),
-        signal: AbortSignal.timeout(90000)
+        signal: AbortSignal.timeout(vip ? 240000 : 90000)
       });
       const d = await r.json();
       if (r.ok && d.text) { lastEngine = "订阅⚡"; return { text: d.text, thinking: "", tool_calls: null }; }
