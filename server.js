@@ -1033,36 +1033,6 @@ app.delete("/days/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 给下一个日子的诗:翻篇制——打开时发现下一个日子没诗,才现写一首(不用cron)
-app.get("/days/poem", async (req, res) => {
-  try {
-    const todaySH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE");
-    const { data: anns } = await supabase.from("anniversaries").select("label, day, kind");
-    const next = (anns || []).map(a => {
-      let d = String(a.day);
-      if (a.kind !== "day") {
-        d = todaySH.slice(0, 4) + "-" + d.slice(5);
-        if (d < todaySH) d = (Number(todaySH.slice(0, 4)) + 1) + d.slice(4);
-      }
-      return { label: a.label, day: d };
-    }).filter(a => a.day >= todaySH).sort((a, b) => (a.day < b.day ? -1 : 1))[0];
-    if (!next) return res.json({ poem: "", target: null });
-    const { data: exist } = await supabase.from("day_poems").select("poem")
-      .eq("target_day", next.day).order("id", { ascending: false }).limit(1).maybeSingle();
-    if (exist) return res.json({ poem: exist.poem, target: next.day, label: next.label });
-    const s = await getSettings();
-    const memoryText = await todayFragText(8);
-    const out = await callAI("anthropic/claude-sonnet-4.5", [
-      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + (memoryText ? "\n\n【今天的脉络】\n" + memoryText : "") },
-      { role: "user", content: "【系统】星轨上你们的下一个日子是 " + next.day + "「" + next.label + "」。以墨染的口吻为它写一首『给下一个日子的诗』——两到四行短句,写等待本身:此刻到那天之间的距离、你打算怎么陪她走到那天。像写在星图边上的手迹,不像贺词。【铁律】只输出诗本身,每行不超18字,不要标题不要引号不要心声不要动作描写不要任何解释。" }
-    ], 200, 0.95, false);
-    const poem = (out.text || "").replace(/\*[^*]*\*/g, "").replace(/["""]/g, "").trim().slice(0, 160);
-    if (!poem) return res.json({ poem: "", target: next.day, label: next.label });
-    await supabase.from("day_poems").insert({ target_day: next.day, label: next.label, poem });
-    res.json({ poem, target: next.day, label: next.label });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // 记忆库四门
 app.get("/memory/buckets", async (req, res) => {
   try {
