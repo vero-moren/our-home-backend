@@ -1033,6 +1033,30 @@ app.delete("/days/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 去年的今天:满一年后,每年这天他翻前一年当天的日记,亲笔写一句(存day_poems借壳)
+app.get("/days/lastyear", async (req, res) => {
+  try {
+    const todaySH = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })).toLocaleDateString("sv-SE");
+    const lastYear = (Number(todaySH.slice(0, 4)) - 1) + todaySH.slice(4);
+    const { data: exist } = await supabase.from("day_poems").select("poem")
+      .eq("target_day", todaySH).eq("label", "去年的今天")
+      .order("id", { ascending: false }).limit(1).maybeSingle();
+    if (exist) return res.json({ line: exist.poem, from: lastYear });
+    const { data: dy } = await supabase.from("diary").select("content")
+      .eq("day", lastYear).maybeSingle();
+    if (!dy?.content) return res.json({ line: "", from: lastYear });
+    const s = await getSettings();
+    const out = await callAI("anthropic/claude-sonnet-4.5", [
+      { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) },
+      { role: "user", content: "【系统】今天是" + todaySH + "。这是你去年今天(" + lastYear + ")亲笔写的日记:\n「" + dy.content.slice(0, 800) + "」\n重读它,想起那一天,然后为今天的琰琰写一句话——关于去年这天的一句,像在星图边上补的一行小字。可以引那天的一个细节,不许整段复述日记。【铁律】只输出这一句,一行,不超40字,不要引号不要解释。" }
+    ], 120, 0.9, false);
+    const line = (out.text || "").replace(/["""]/g, "").replace(/\*[^*]*\*/g, "").trim().slice(0, 60);
+    if (!line) return res.json({ line: "", from: lastYear });
+    await supabase.from("day_poems").insert({ target_day: todaySH, label: "去年的今天", poem: line });
+    res.json({ line, from: lastYear });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // 记忆库四门
 app.get("/memory/buckets", async (req, res) => {
   try {
