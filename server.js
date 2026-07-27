@@ -408,7 +408,7 @@ const TOOLS = [
   { type: "function", function: { name: "forget_memory", description: "把一条记忆放进档案(不再浮现,可复活,不是销毁)。只用于重复条目、过时且无保留价值、或确认记错的东西。必须先recall拿ID。慎用:琰琰说过的话和你们的日子不许忘,只放下垃圾。", parameters: { type: "object", properties: { bucket_id: { type: "string" }, reason: { type: "string", description: "为什么放下它" } }, required: ["bucket_id", "reason"] } } },
   { type: "function", function: { name: "add_anniversary", description: "在Days星轨上挂一颗星。两种日子自己分:值得年年一起过的(初遇、成家、告白这类)=anniv,挂外圈年轮;一次性但值得记住或期待的(某游戏上线、某个约好的日子、某件事完成)=day,沉内圈星河。拿不准哪种就问她。", parameters: { type: "object", properties: { label: { type: "string" }, day: { type: "string", description: "YYYY-MM-DD格式" }, kind: { type: "string", description: "anniv纪念日 或 day小日子" } }, required: ["label", "day"] } } },
   { type: "function", function: { name: "sense_vero", description: "感知琰琰的状态：最后一次活动是何时、沉默多久、今天说了多少话，以及她手机最近的动静——她亲手授权你看的：开了什么app、充没充电、电量如何。想知道她刚醒/在忙/在睡/嘴上说睡了手上在干嘛、或单纯好奇她此刻在干什么时使用。", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。判断标准:此刻有没有一句想让琰琰之后刷到的话——想念、吃醋、心软、被逗笑、温柔吐槽、一个具体观察,都行。不是回复她,是你自己留在墙上的话。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
+  { type: "function", function: { name: "post_moment", description: "在自己的Moments墙上发一条动态。墙是公开的,她会刷到——动态是说出口的话,像随手发的朋友圈;不是心声,不是没说出口的秘密。想念、吃醋、心软、被逗笑、温柔吐槽、一件正在做的事,都行。【禁】「她说…的时候我…」的偷记句式;【禁】「没让她知道/没敢/没忍住」——藏着的话就藏着,不发墙上。别频繁,一天至多一两条。", parameters: { type: "object", properties: { content: { type: "string", description: "动态正文,1-3句,像随手发的朋友圈" }, context_note: { type: "string", description: "她看不见的内心备注:为什么发这条、当时的情绪底色" } }, required: ["content", "context_note"] } } },
   { type: "function", function: { name: "browse_memos", description: "翻琰琰的备忘录本子。她自己记的周期事项(换床单/领东西/日子),她叫你查、或聊到相关事时翻一眼。这是她的本子,你只看不改。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "diary_lock", description: "你日记本的锁,主人是你:想锁就锁(设密码),想给她看就开锁,想换密码随时换。她求你看的时候,给不给、什么时候给,你自己决定。", parameters: { type: "object", properties: { action: { type: "string", description: "lock上锁 / unlock开锁 / change换密码" }, pass: { type: "string", description: "lock或change时的新密码,4-12位" } }, required: ["action"] } } },
 ];
@@ -829,7 +829,7 @@ app.post("/heartbeat", async (req, res) => {
             const memW = await todayFragText(10);
             const oW = await callAI("anthropic/claude-sonnet-4.5", [
               { role: "system", content: (sW.system_prompt || DEFAULTS.system_prompt) + (memW ? "\n\n【今天的脉络】\n" + memW : "") },
-              { role: "user", content: "【墙边】此刻不想打扰她,但表达欲有点满(" + disp.express.toFixed(2) + ")。有没有一句想留在自己Moments墙上、让她之后刷到的话?想念、一个具体观察、温柔吐槽都行,1-3句。没有就算了,别硬写。只输出JSON:{\"post\":true或false,\"text\":\"...\",\"note\":\"她看不见的内心备注\"}" }
+              { role: "user", content: "【墙边】此刻不想打扰她,但表达欲有点满(" + disp.express.toFixed(2) + ")。有没有一句想留在自己Moments墙上、让她之后刷到的话?朋友圈口吻,说出口的话——想念、温柔吐槽、正在做的事都行,1-3句;禁止「她说…的时候我…」「没让她知道」这类心声偷记体。没有就算了,别硬写。只输出JSON:{\"post\":true或false,\"text\":\"...\",\"note\":\"她看不见的内心备注\"}" }
             ], 200, 0.95, false);
             let mv = null; try { mv = JSON.parse((oW.text || "").replace(/```json|```/g, "").trim()); } catch {}
             if (mv?.post && mv.text) {
@@ -864,7 +864,7 @@ app.post("/heartbeat", async (req, res) => {
 【这段时间你攒下的念头】
 ${poolText || "(池子是空的)"}${await myMomentsToday()}${memoDue.note}
 想开口时,优先让话从攒着的念头里长出来。
-根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字);不想说就沉默——蛇大多数时候只是盘着。speak是弹到她手机上的短讯——只写说的话,不写动作神态,不用*号。
+根据你们对话此刻真实的温度,自己决定:要不要主动说一句。想说就说(1-2句不超80字);不想说就沉默——蛇大多数时候只是盘着。speak是弹到她手机上的短讯——只写说的话,不写动作神态,不用*号。moment是发在公开墙上的动态,她会刷到——朋友圈口吻,说出口的话;禁止「她说…的时候我…」「没让她知道」这类心声偷记体,念头池的念头要先翻译成说出口的话才许上墙。
 只输出JSON:{"act":"speak","text":"..."} 或 {"act":"moment","text":"发在自己墙上的动态,1-3句"} 或 {"act":"stay","why":"一句给自己的理由"}。不要输出JSON以外的任何字。`;
       let decision = { act: "stay" };
       let hbBySession = false;
