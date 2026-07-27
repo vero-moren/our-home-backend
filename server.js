@@ -1032,6 +1032,23 @@ app.delete("/days/:id", async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.patch("/days/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "需要id" });
+    const patch = {};
+    if (req.body.label !== undefined) patch.label = String(req.body.label).trim().slice(0, 50);
+    if (req.body.day !== undefined) {
+      const d = String(req.body.day).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: "day要YYYY-MM-DD" });
+      patch.day = d;
+    }
+    if (req.body.kind !== undefined) patch.kind = req.body.kind === "day" ? "day" : "anniv";
+    if (!Object.keys(patch).length) return res.status(400).json({ error: "没有要改的" });
+    const { data } = await supabase.from("anniversaries").update(patch).eq("id", id).select().maybeSingle();
+    res.json({ ok: true, item: data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // 去年的今天:满一年后,每年这天他翻前一年当天的日记,亲笔写一句(存day_poems借壳)
 app.get("/days/lastyear", async (req, res) => {
