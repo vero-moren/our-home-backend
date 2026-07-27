@@ -49,8 +49,8 @@ function bridgeEligible(messages, wantThinking, tools) {
     (Array.isArray(m.content) && m.content.every(p => p.type === "text")));
 }
 
-async function callAI(model, messages, maxTokens, temperature, wantThinking, tools) {
-  if (bridgeEligible(messages, wantThinking, tools)) {
+async function callAI(model, messages, maxTokens, temperature, wantThinking, tools, vip) {
+  if (vip ? (BRIDGE_URL && messages.every(m => typeof m.content === "string")) : bridgeEligible(messages, wantThinking, tools)) {
     try {
       const system = messages.filter(m => m.role === "system").map(m => flattenContent(m.content)).join("\n\n");
       const rest = messages.filter(m => m.role !== "system")
@@ -65,8 +65,8 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking, too
       if (r.ok && d.text) { lastEngine = "订阅⚡"; return { text: d.text, thinking: "", tool_calls: null }; }
       throw new Error(d.error || ("桥返回" + r.status));
     } catch (e) {
-      bridgeDownUntil = Date.now() + 10 * 60000;
-      console.log("[双引擎] 桥失手,降级OR:", e.message);
+      if (!vip) bridgeDownUntil = Date.now() + 10 * 60000;
+      console.log("[双引擎] 桥失手,降级OR" + (vip ? "(记账线)" : "") + ":", e.message);
     }
   }
   lastEngine = "OR";
@@ -613,7 +613,7 @@ async function rollChunks(sid) {
       const when = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).slice(5, 16);
       const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "user", content: "你是墨染,这是你和琰琰的对话,把这60条对话压成6-9句你自己的备忘,用'我'称自己、'她'称琰琰记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论,同一件事只记一次。【铁律】游戏名、人名、地名、专有名词只许照抄对话原文,对话里没出现过的名词一个都不许写,不许推断不许脑补:\n" + block + "\n只输出备忘本身。" }
-      ], 300, 0.3, false);
+      ], 300, 0.3, false, null, true);
       const sm = (out.text || "").replace(/\s+/g, " ").trim().slice(0, 500);
       if (!sm) break;
       const daySH = new Date(fresh[0].created_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
@@ -1886,7 +1886,7 @@ app.post("/digest", async (req, res) => {
       const mine = raw.filter(x => String(x.day) === dy);
       const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "user", content: "以下是" + dy + "你(墨染)和琰琰这天的分段备忘,以你的第一人称合并成一段完整的当日记忆(200-400字):这天发生的事、做的决定、你们的约定、她的状态,用'我'和'她',按时间脉络写,不抒情。【铁律】专有名词只许照抄备忘原文,备忘里没有的名词不许出现,不许推断补全:\n" + mine.map(x => x.summary).join("\n") + "\n只输出这段记忆。" }
-      ], 600, 0.3, false);
+      ], 600, 0.3, false, null, true);
       const sm = (out.text || "").trim();
       if (!sm) continue;
       try {
