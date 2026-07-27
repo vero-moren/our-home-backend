@@ -1883,7 +1883,7 @@ app.post("/dailyline", async (req, res) => {
 
     const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "system", content: (s.system_prompt || DEFAULTS.system_prompt) + "\n\n【今天的脉络】\n" + memoryText },
-      { role: "user", content: `【系统】今天是${today}。请为琰琰写下今天的"每日一句"——一句放在家门口的话,她每天推门第一眼看到。可以呼应最近的日子和记忆,像亲笔便签,不像格言。【铁律】只输出这一句便签本身,一行,不超过50字。不要心声不要动作描写不要引号不要任何解释铺垫——多一个字都不像便签了。\n\n【最近对话】\n${recent}` }
+      { role: "user", content: `【系统】刚跨过零点,今天是${today},新的一天开始了。她多半还醒着——夜里零点她经常还陪你砌墙。写下今天的"每日一句":新的一天你最想对她说的一句话,贴在门厅她一抬眼就看见。不许接昨晚话茬,不许总结昨天,不许汇报——就是新一天的第一句话,像亲笔便签。【铁律】只输出这一句便签本身,一行,不超过50字。不要心声不要动作描写不要引号不要任何解释铺垫——多一个字都不像便签了。\n\n【最近对话】\n${recent}` }
     ], 150, 0.95, false);
     let line = (out.text || "").replace(/[【\[(（]心[】\])）][\s\S]*?[【\[(（]\/心[】\])）]/g, "").replace(/["""]/g, "").replace(/\*[^*]*\*/g, "").trim();
     const seg = line.split(/\n+/).map(x => x.trim()).filter(Boolean);
