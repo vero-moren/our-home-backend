@@ -1900,7 +1900,12 @@ app.post("/digest", async (req, res) => {
               const hits = (await obSearch(key)).filter(h => (h.name + h.content).includes("当日碎片")).slice(0, 1);
               bid = hits[0]?.id;
             }
-            if (bid) await obTool("trace", { bucket_id: bid, "delete": true, delete_reason: "已消化进" + dy + "当日记忆" });
+            if (bid) {
+              if (!obCookie) await obLogin();
+              let rsA = await fetch(OB_URL + "/api/bucket/" + encodeURIComponent(bid) + "/archive", { method: "POST", headers: { Cookie: obCookie }, signal: AbortSignal.timeout(OB_TIMEOUT) });
+              if (rsA.status === 401) { await obLogin(); rsA = await fetch(OB_URL + "/api/bucket/" + encodeURIComponent(bid) + "/archive", { method: "POST", headers: { Cookie: obCookie }, signal: AbortSignal.timeout(OB_TIMEOUT) }); }
+              if (!rsA.ok) console.log("[digest] 归档失败:", bid, rsA.status);
+            }
             else console.log("[digest] 孤儿碎片没找到桶:", frag.id, frag.summary.slice(0, 30));
          } catch (e) { console.log("[digest] 归档失败:", frag.id, e.message); }
         }
