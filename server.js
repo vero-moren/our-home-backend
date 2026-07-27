@@ -1132,6 +1132,15 @@ app.post("/memory/restore", async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.post("/memory/forget", async (req, res) => {
+  try {
+    const id = String(req.body.bucket_id || "").trim();
+    if (!id) return res.status(400).json({ error: "需要bucket_id" });
+    const r = await obTool("trace", { bucket_id: id, "delete": true, delete_reason: "琰琰在档案区手动沉底" });
+    obCache = { at: 0, items: null };
+    res.json({ ok: true, msg: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.post("/memory/pin", async (req, res) => {
   try {
     const id = String(req.body.bucket_id || "").trim();
