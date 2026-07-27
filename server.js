@@ -224,6 +224,20 @@ app.get("/ombre/buckets/:id", async (req, res) => {
     res.json(obNorm(d.bucket || d));
   } catch (e) { res.status(503).json({ error: e.message }); }
 });
+app.get("/ombre/pack", async (req, res) => {
+  try {
+    const ids = String(req.query.ids || "").split(",").map(s => s.trim()).filter(Boolean).slice(0, 20);
+    const out = [];
+    for (const id of ids) {
+      try {
+        const d = await obReq("/api/bucket/" + encodeURIComponent(id));
+        const m = obNorm(d.bucket || d);
+        out.push("【" + m.id + " · " + (m.name || "?") + "】\n" + (m.content || m.preview || "(空)"));
+      } catch (e) { out.push("【" + id + "】读取失败:" + e.message); }
+    }
+    res.type("text/plain; charset=utf-8").send(out.join("\n\n========\n\n"));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ============ 批次八收官:OB写线(OAuth钥匙 + MCP的手) ============
 const crypto = require("crypto");
@@ -1836,7 +1850,7 @@ app.post("/digest", async (req, res) => {
       const sm = (out.text || "").trim();
       if (!sm) continue;
       try {
-        await obTool("hold", { content: "【" + dy + "】" + sm, tags: "日常", importance: 6 });
+        await obTool("hold", { content: "【" + dy + "】" + sm, tags: "每日总结", importance: 6 });
         // 归档OB里当天的碎片
         for (const frag of mine) {
           try {
