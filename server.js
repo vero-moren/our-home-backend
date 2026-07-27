@@ -148,6 +148,7 @@ function obNorm(b = {}) {
     preview: String(b.content_preview || b.preview || content).replace(/\s+/g, " ").trim(),
     type: String(b.type || meta.type || "dynamic"),
     domains: [].concat(b.domains || b.domain || meta.domain || []).join(","),
+    tags: [].concat(b.tags || meta.tags || []).join(","),
     importance: Number(b.importance ?? meta.importance ?? 5) || 5,
     pinned: Boolean(b.pinned ?? meta.pinned),
     createdAt: b.created_at || b.created || meta.created || null,
@@ -1096,8 +1097,12 @@ app.get("/memory/buckets", async (req, res) => {
 app.post("/memory/revise", async (req, res) => {
   try {
     const id = String(req.body.bucket_id || "").trim(), c = String(req.body.content || "").slice(0, 1500);
-    if (!id || !c) return res.status(400).json({ error: "需要bucket_id和content" });
-    const r = await obTool("trace", { bucket_id: id, content: c });
+    const tg = req.body.tags != null ? String(req.body.tags).slice(0, 200) : null;
+    if (!id || (!c && tg == null)) return res.status(400).json({ error: "需要bucket_id和content或tags" });
+    const args = { bucket_id: id };
+    if (c) args.content = c;
+    if (tg != null) args.tags = tg;
+    const r = await obTool("trace", args);
     obCache = { at: 0, items: null };
     res.json({ ok: true, msg: r });
   } catch (e) { res.status(500).json({ error: e.message }); }
