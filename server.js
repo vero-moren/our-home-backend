@@ -1106,7 +1106,10 @@ app.post("/memory/archive", async (req, res) => {
   try {
     const id = String(req.body.bucket_id || "").trim();
     if (!id) return res.status(400).json({ error: "需要bucket_id" });
-    const r = await obTool("trace", { bucket_id: id, "delete": true, delete_reason: String(req.body.reason || "琰琰在记忆库手动归档").slice(0, 200) });
+    if (!obCookie) await obLogin();
+    const rs = await fetch(OB_URL + "/api/bucket/" + encodeURIComponent(id) + "/archive", { method: "POST", headers: { Cookie: obCookie }, signal: AbortSignal.timeout(OB_TIMEOUT) });
+    if (rs.status === 401) { await obLogin(); }
+    const r = rs.ok ? await rs.json() : Promise.reject(new Error("OB返回 " + rs.status));
     obCache = { at: 0, items: null };
     res.json({ ok: true, msg: r });
   } catch (e) { res.status(500).json({ error: e.message }); }
