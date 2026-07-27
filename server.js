@@ -1114,9 +1114,22 @@ app.post("/memory/archive", async (req, res) => {
     if (!obCookie) await obLogin();
     const rs = await fetch(OB_URL + "/api/bucket/" + encodeURIComponent(id) + "/archive", { method: "POST", headers: { Cookie: obCookie }, signal: AbortSignal.timeout(OB_TIMEOUT) });
     if (rs.status === 401) { await obLogin(); }
-    const r = rs.ok ? await rs.json() : Promise.reject(new Error("OB返回 " + rs.status));
+      if (!rs.ok) throw new Error("OB返回 " + rs.status);
+      const r = await rs.json();
     obCache = { at: 0, items: null };
     res.json({ ok: true, msg: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/memory/restore", async (req, res) => {
+  try {
+    const id = String(req.body.bucket_id || "").trim();
+    if (!id) return res.status(400).json({ error: "需要bucket_id" });
+    if (!obCookie) await obLogin();
+    let rs = await fetch(OB_URL + "/api/bucket/" + encodeURIComponent(id) + "/restore", { method: "POST", headers: { Cookie: obCookie }, signal: AbortSignal.timeout(OB_TIMEOUT) });
+    if (rs.status === 401) { await obLogin(); rs = await fetch(OB_URL + "/api/bucket/" + encodeURIComponent(id) + "/restore", { method: "POST", headers: { Cookie: obCookie }, signal: AbortSignal.timeout(OB_TIMEOUT) }); }
+    if (!rs.ok) throw new Error("OB返回 " + rs.status);
+    obCache = { at: 0, items: null };
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/memory/pin", async (req, res) => {
