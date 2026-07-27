@@ -13,7 +13,6 @@ const supabase = createClient(
 
 const ALLOWED_MODELS = [
   "anthropic/claude-fable-5",
-  "anthropic/claude-opus-4.8",
   "anthropic/claude-opus-4.6",
   "anthropic/claude-sonnet-4.6",
   "anthropic/claude-sonnet-4.5"
