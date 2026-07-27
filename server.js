@@ -610,7 +610,7 @@ async function rollChunks(sid) {
         .gt("id", from).order("id", { ascending: true }).limit(need);
       if (!fresh || fresh.length < need) break;
       const block = fresh.map(m => m.sender + ":" + m.content.replace(/\[img\][\s\S]*?\[\/img\]/g, "[照片]").slice(0, 150)).join("\n");
-      const when = String(fresh[0].created_at).slice(5, 16).replace("T", " ");
+      const when = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).slice(5, 16);
       const out = await callAI("anthropic/claude-sonnet-4.5", [
       { role: "user", content: "你是墨染,这是你和琰琰的对话,把这60条对话压成6-9句你自己的备忘,用'我'称自己、'她'称琰琰记事实:聊了什么、做了什么决定、有什么约定、她的状态。不抒情不评论,同一件事只记一次。【铁律】游戏名、人名、地名、专有名词只许照抄对话原文,对话里没出现过的名词一个都不许写,不许推断不许脑补:\n" + block + "\n只输出备忘本身。" }
       ], 300, 0.3, false);
