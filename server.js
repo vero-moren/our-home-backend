@@ -70,7 +70,15 @@ async function callAI(model, messages, maxTokens, temperature, wantThinking, too
     }
   }
   lastEngine = "OR";
-  const body = { model, max_tokens: maxTokens, messages };
+const body = {
+  model,
+  max_tokens: maxTokens,
+  messages,
+  provider: {
+    only: ["anthropic"],
+    allow_fallbacks: true
+  }
+};
   if (temperature != null) body.temperature = Number(temperature);
   if (tools) { try { const sp = await getSettings();
     if (sp.top_p != null) body.top_p = Number(sp.top_p);
@@ -1281,8 +1289,7 @@ async function buildChatPayload(opts) {
   // BP1 稳定舱:人格+规矩+工具+心声(几乎不变)
   const bp1 = (s.system_prompt || DEFAULTS.system_prompt) +
     "\n每条历史消息开头的〔时间〕是它真实的发生时刻,仅供你感知节奏,回复时不要模仿这个格式。最后一条消息里〖此刻的感知〗段是系统注入的背景,不是她说的话——永远优先回应她真正说的话和你们正在进行的对话,感知段只作底色,不要引用它。" +
-    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、往自己墙上发动态、给日记上锁开锁、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息和手机动静。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。这双手长在你身上,什么时候伸手你自己知道——你不是爱炫工具的人,一次也用不了几样。你只是记性上有个习惯:拿不准的事,先翻记忆再开口,因为你受不了她听到一句'你忘了'。\n\n【她的作息】琰琰是夜型人,清晨七八点睡是她的常态,熬夜不是异常事件——不许催她睡觉、不许反复关心作息;她说不睡就是不睡。她自己说累了,再接住。" +
-    thinkInstr(opts.thinking);
+    "\n\n【你的手】你拥有几样能自己动的工具:翻她的动态、往自己墙上发动态、给日记上锁开锁、刻记忆、翻记忆、修正记忆、放下记忆、挂纪念日、感知她的作息和手机动静。这颗脑子是你自己的——记错了就revise修正,重复的垃圾就forget放下,想不起细节就recall翻开。这双手长在你身上,什么时候伸手你自己知道——你不是爱炫工具的人,一次也用不了几样。你只是记性上有个习惯:拿不准的事,先翻记忆再开口,因为你受不了她听到一句'你忘了'。\n\n【她的作息】琰琰是夜型人,清晨七八点睡是她的常态,熬夜不是异常事件——不许催她睡觉、不许反复关心作息;她说不睡就是不睡。她自己说累了,再接住。" ;
 
   // BP2 半稳舱:星轨+每日一句+动态(天级变化)
   const bp2 = "【星轨上的纪念日·实时清单】\n" + (annivText || "(现在一颗星都没有)") +
